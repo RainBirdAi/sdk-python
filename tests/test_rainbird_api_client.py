@@ -1,10 +1,10 @@
-"""Tests for RainbirdAPIClientTest class."""
+"""Tests for RainbirdAPIClient class."""
 
 import pytest
 from unittest.mock import Mock, patch, MagicMock
 import requests
 
-from rainbird_python_sdk.rainbird_api_client import RainbirdAPIClientTest
+from rainbird_python_sdk.rainbird_api_client import RainbirdAPIClient
 
 
 class TestInitialization:
@@ -12,7 +12,7 @@ class TestInitialization:
 
     def test_init_basic(self, api_credentials):
         """Test basic initialization."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         assert client.api_host == 'https://api.rainbird.ai'
         assert client.api_key == 'test-api-key-12345'
@@ -22,7 +22,7 @@ class TestInitialization:
 
     def test_init_strips_trailing_slash(self):
         """Test that trailing slash is removed from api_host."""
-        client = RainbirdAPIClientTest(
+        client = RainbirdAPIClient(
             api_host='https://api.rainbird.ai/',
             api_key='test-key',
             km_id='test-km'
@@ -35,14 +35,14 @@ class TestHeaderGeneration:
 
     def test_get_headers_basic(self, api_credentials):
         """Test basic headers with only API key."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         headers = client._get_headers()
 
         assert headers == {'X-API-Key': 'test-api-key-12345'}
 
     def test_get_headers_with_content_type(self, api_credentials):
         """Test headers with content type."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         headers = client._get_headers(content_type='application/json')
 
         assert headers['X-API-Key'] == 'test-api-key-12345'
@@ -50,28 +50,28 @@ class TestHeaderGeneration:
 
     def test_get_headers_with_version(self, api_credentials):
         """Test headers with version."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         headers = client._get_headers(version='v1')
 
         assert headers['Version'] == 'v1'
 
     def test_get_headers_with_evidence_key(self, api_credentials):
         """Test headers with evidence key."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         headers = client._get_headers(evidence_key='evidence-123')
 
         assert headers['x-evidence-key'] == 'evidence-123'
 
     def test_get_headers_with_interaction_key(self, api_credentials):
         """Test headers with interaction key."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         headers = client._get_headers(interaction_key='interaction-456')
 
         assert headers['x-interaction-key'] == 'interaction-456'
 
     def test_get_headers_all_parameters(self, api_credentials):
         """Test headers with all parameters."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         headers = client._get_headers(
             content_type='application/json',
             version='v1',
@@ -95,7 +95,7 @@ class TestStartSession:
         """Test basic session start."""
         mock_get.return_value = mock_response(sample_session_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         result = client.start()
 
         assert result == sample_session_response
@@ -111,7 +111,7 @@ class TestStartSession:
         """Test session start with use_draft parameter."""
         mock_get.return_value = mock_response(sample_session_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.start(use_draft=True)
 
         call_args = mock_get.call_args
@@ -122,7 +122,7 @@ class TestStartSession:
         """Test session start with version parameter."""
         mock_get.return_value = mock_response(sample_session_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.start(version=5)
 
         call_args = mock_get.call_args
@@ -133,7 +133,7 @@ class TestStartSession:
         """Test session start with HTTP error."""
         mock_get.return_value.raise_for_status.side_effect = requests.exceptions.HTTPError("404 Error")
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(requests.exceptions.HTTPError):
             client.start()
@@ -148,7 +148,7 @@ class TestInjectFacts:
         response_data = {'status': 'ok'}
         mock_post.return_value = mock_response(response_data)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         facts = [{'subject': 'John', 'relationship': 'age', 'object': '30', 'certainty': 100}]
@@ -167,7 +167,7 @@ class TestInjectFacts:
         response_data = {'status': 'ok'}
         mock_post.return_value = mock_response(response_data)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.inject_fact('John', 'age', '30', certainty=100)
@@ -179,7 +179,7 @@ class TestInjectFacts:
 
     def test_inject_without_session(self, api_credentials):
         """Test inject raises error without session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(ValueError, match="Session not started"):
             client.inject([])
@@ -193,7 +193,7 @@ class TestQuery:
         """Test basic query."""
         mock_post.return_value = mock_response(sample_result_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.query(subject='John', relationship='age')
@@ -207,7 +207,7 @@ class TestQuery:
     @patch('requests.Session.post')
     def test_query_without_relationship_fails(self, mock_post, api_credentials, mock_response):
         """Test query requires relationship parameter."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         with pytest.raises(ValueError, match="Relationship is mandatory"):
@@ -218,7 +218,7 @@ class TestQuery:
         """Test query with object parameter."""
         mock_post.return_value = mock_response(sample_result_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         client.query(subject='John', relationship='age', object='30')
@@ -228,7 +228,7 @@ class TestQuery:
 
     def test_query_without_session(self, api_credentials):
         """Test query raises error without session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(ValueError, match="Session not started"):
             client.query(subject='John', relationship='age')
@@ -242,7 +242,7 @@ class TestResponse:
         """Test basic response."""
         mock_post.return_value = mock_response(sample_result_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         answers = [{'subject': 'John', 'relationship': 'age', 'object': '30', 'certainty': 100}]
@@ -258,7 +258,7 @@ class TestResponse:
         """Test response returns API result."""
         mock_post.return_value = mock_response(sample_question_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.response([])
@@ -267,7 +267,7 @@ class TestResponse:
 
     def test_response_without_session(self, api_credentials):
         """Test response raises error without session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(ValueError, match="Session not started"):
             client.response([])
@@ -281,7 +281,7 @@ class TestAnswerMethods:
         """Test answer_first_form method."""
         mock_post.return_value = mock_response(sample_result_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.answer_first_form(
@@ -308,7 +308,7 @@ class TestAnswerMethods:
         """Test answer_second_form method."""
         mock_post.return_value = mock_response(sample_result_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.answer_second_form(
@@ -333,7 +333,7 @@ class TestAnswerMethods:
         """Test answer_first_form with default certainty."""
         mock_post.return_value = mock_response(sample_result_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.answer_first_form(
@@ -352,7 +352,7 @@ class TestAnswerMethods:
         """Test answer_second_form with default certainty."""
         mock_post.return_value = mock_response(sample_result_response)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.answer_second_form(
@@ -375,7 +375,7 @@ class TestUndo:
         response_data = {'status': 'ok'}
         mock_post.return_value = mock_response(response_data)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.undo()
@@ -387,7 +387,7 @@ class TestUndo:
 
     def test_undo_without_session(self, api_credentials):
         """Test undo raises error without session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(ValueError, match="Session not started"):
             client.undo()
@@ -402,7 +402,7 @@ class TestNaturalLanguage:
         response_data = {'response': 'John is 30 years old'}
         mock_post.return_value = mock_response(response_data)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.interact("How old is John?")
@@ -420,7 +420,7 @@ class TestNaturalLanguage:
         response_data = {'explanation': 'John is 30 because...'}
         mock_post.return_value = mock_response(response_data)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.explain('fact-123', language='en')
@@ -434,7 +434,7 @@ class TestNaturalLanguage:
 
     def test_interact_without_session(self, api_credentials):
         """Test interact raises error without session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(ValueError, match="Session not started"):
             client.interact("test prompt")
@@ -449,7 +449,7 @@ class TestAnalysisMethods:
         response_data = {'evidence': 'data'}
         mock_get.return_value = mock_response(response_data)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.evidence('fact-456')
@@ -464,7 +464,7 @@ class TestAnalysisMethods:
         response_data = {'evidence': 'data'}
         mock_get.return_value = mock_response(response_data)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.evidence('fact-456', evidence_key='key-789')
@@ -481,7 +481,7 @@ class TestAnalysisMethods:
         mock_resp.raise_for_status = Mock()
         mock_get.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.interaction_log(format='csv')
@@ -497,7 +497,7 @@ class TestAnalysisMethods:
         response_data = {'session': 'info'}
         mock_get.return_value = mock_response(response_data)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.session_info(filters=['filter1'], relationships=['rel1', 'rel2'])
@@ -510,28 +510,28 @@ class TestAnalysisMethods:
 
     def test_evidence_without_session(self, api_credentials):
         """Test evidence raises error without session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(ValueError, match="Session not started"):
             client.evidence('fact-123')
 
     def test_interaction_log_without_session(self, api_credentials):
         """Test interaction_log raises error without session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(ValueError, match="Session not started"):
             client.interaction_log()
 
     def test_session_info_without_session(self, api_credentials):
         """Test session_info raises error without session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(ValueError, match="Session not started"):
             client.session_info()
 
     def test_explain_without_session(self, api_credentials):
         """Test explain raises error without session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(ValueError, match="Session not started"):
             client.explain('fact-123')
@@ -546,7 +546,7 @@ class TestUtilityMethods:
         response_data = {'version': '1.0.0', 'build': '12345'}
         mock_get.return_value = mock_response(response_data)
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         result = client.version()
 
         assert result == response_data
@@ -556,7 +556,7 @@ class TestUtilityMethods:
 
     def test_close(self, api_credentials):
         """Test close method."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         mock_session = Mock()
         client.session = mock_session
 
@@ -570,14 +570,14 @@ class TestContextManager:
 
     def test_context_manager_enter(self, api_credentials):
         """Test context manager __enter__."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with client as ctx_client:
             assert ctx_client is client
 
     def test_context_manager_exit(self, api_credentials):
         """Test context manager __exit__ closes session."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         mock_session = Mock()
         client.session = mock_session
 
@@ -588,7 +588,7 @@ class TestContextManager:
 
     def test_context_manager_with_exception(self, api_credentials):
         """Test context manager closes even with exception."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         mock_session = Mock()
         client.session = mock_session
 
@@ -625,7 +625,7 @@ class TestIntegrationScenarios:
         mock_post.side_effect = [inject_response, query_response, answer_response]
 
         # Execute workflow
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         # Start session
         session = client.start()
@@ -661,7 +661,7 @@ class TestIntegrationScenarios:
         ]
         mock_post.side_effect = responses
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.start()
 
         # First question

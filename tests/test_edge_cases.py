@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import Mock, patch
 import requests
-from rainbird_python_sdk.rainbird_api_client import RainbirdAPIClientTest
+from rainbird_python_sdk.rainbird_api_client import RainbirdAPIClient
 
 
 class TestErrorHandling:
@@ -14,7 +14,7 @@ class TestErrorHandling:
         """Test handling of network errors."""
         mock_get.side_effect = requests.exceptions.ConnectionError("Network error")
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(requests.exceptions.ConnectionError):
             client.start()
@@ -24,7 +24,7 @@ class TestErrorHandling:
         """Test handling of timeout errors."""
         mock_get.side_effect = requests.exceptions.Timeout("Request timeout")
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         with pytest.raises(requests.exceptions.Timeout):
             client.start()
@@ -36,7 +36,7 @@ class TestErrorHandling:
         mock_resp.raise_for_status.side_effect = requests.exceptions.HTTPError("400 Bad Request")
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         with pytest.raises(requests.exceptions.HTTPError):
@@ -49,7 +49,7 @@ class TestErrorHandling:
         mock_resp.raise_for_status.side_effect = requests.exceptions.HTTPError("401 Unauthorized")
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         with pytest.raises(requests.exceptions.HTTPError):
@@ -61,12 +61,12 @@ class TestEdgeCases:
 
     def test_empty_api_host(self):
         """Test initialization with empty api_host."""
-        client = RainbirdAPIClientTest(api_host='', api_key='key', km_id='km')
+        client = RainbirdAPIClient(api_host='', api_key='key', km_id='km')
         assert client.api_host == ''
 
     def test_empty_api_key(self):
         """Test headers without api_key."""
-        client = RainbirdAPIClientTest(
+        client = RainbirdAPIClient(
             api_host='https://api.rainbird.ai',
             api_key='',
             km_id='test-km'
@@ -76,7 +76,7 @@ class TestEdgeCases:
 
     def test_none_api_key(self):
         """Test headers with None api_key."""
-        client = RainbirdAPIClientTest(
+        client = RainbirdAPIClient(
             api_host='https://api.rainbird.ai',
             api_key=None,
             km_id='test-km'
@@ -86,7 +86,7 @@ class TestEdgeCases:
 
     def test_multiple_trailing_slashes(self):
         """Test api_host with multiple trailing slashes."""
-        client = RainbirdAPIClientTest(
+        client = RainbirdAPIClient(
             api_host='https://api.rainbird.ai///',
             api_key='key',
             km_id='km'
@@ -101,7 +101,7 @@ class TestEdgeCases:
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.inject([])
@@ -115,7 +115,7 @@ class TestEdgeCases:
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.query(relationship='test_rel')
@@ -132,7 +132,7 @@ class TestEdgeCases:
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.inject_fact('John', 'age', '30', certainty=0)
@@ -148,7 +148,7 @@ class TestEdgeCases:
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.answer_second_form(
@@ -173,7 +173,7 @@ class TestSpecialCharacters:
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         client.inject_fact('O\'Brien', 'city', 'São Paulo', certainty=100)
@@ -191,7 +191,7 @@ class TestSpecialCharacters:
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.query(subject='测试', relationship='属性')
@@ -208,7 +208,7 @@ class TestSpecialCharacters:
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         long_prompt = "What is " + "x" * 10000 + "?"
@@ -232,7 +232,7 @@ class TestSessionManagement:
         mock_resp.raise_for_status = Mock()
         mock_get.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
 
         result1 = client.start()
         assert client.session_id == 'session-123'
@@ -248,14 +248,14 @@ class TestSessionManagement:
         mock_resp.raise_for_status = Mock()
         mock_get.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         result = client.start()
 
         assert client.session_id is None
 
     def test_operations_after_close(self, api_credentials):
         """Test that operations fail after close."""
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
         client.close()
 
@@ -275,7 +275,7 @@ class TestQuestionTypeHandling:
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         client.answer_first_form(
@@ -299,7 +299,7 @@ class TestQuestionTypeHandling:
         mock_resp.raise_for_status = Mock()
         mock_post.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         client.answer_second_form(
@@ -329,7 +329,7 @@ class TestAnalysisEdgeCases:
         mock_resp.raise_for_status = Mock()
         mock_get.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         result = client.session_info(filters=[])
@@ -346,7 +346,7 @@ class TestAnalysisEdgeCases:
         mock_resp.raise_for_status = Mock()
         mock_get.return_value = mock_resp
 
-        client = RainbirdAPIClientTest(**api_credentials)
+        client = RainbirdAPIClient(**api_credentials)
         client.session_id = 'session-123'
 
         formats = ['csv', 'json', 'xml']

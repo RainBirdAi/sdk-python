@@ -11,10 +11,10 @@ pip install rainbird-python-sdk
 ## Quick Start
 
 ```python
-from rainbird_python_sdk import RainbirdAPIClientTest
+from rainbird_python_sdk import RainbirdAPIClient
 
 # Initialise the client
-client = RainbirdAPIClientTest(
+client = RainbirdAPIClient(
     api_host="https://api.rainbird.ai",
     api_key="your-api-key",
     km_id="your-knowledge-map-id"
@@ -50,9 +50,9 @@ client.close()
 ## Using Context Manager
 
 ```python
-from rainbird_python_sdk import RainbirdAPIClientTest
+from rainbird_python_sdk import RainbirdAPIClient
 
-with RainbirdAPIClientTest(
+with RainbirdAPIClient(
     api_host="https://api.rainbird.ai",
     api_key="your-api-key",
     km_id="your-km-id"
@@ -67,7 +67,7 @@ with RainbirdAPIClientTest(
 ### Initialisation
 
 ```python
-client = RainbirdAPIClientTest(api_host, api_key, km_id)
+client = RainbirdAPIClient(api_host, api_key, km_id)
 ```
 
 - `api_host`: The Rainbird API host URL
@@ -185,10 +185,10 @@ Get the Rainbird API version information.
 ## Example: Complete Workflow
 
 ```python
-from rainbird_python_sdk import RainbirdAPIClientTest
+from rainbird_python_sdk import RainbirdAPIClient
 
 # Initialise
-client = RainbirdAPIClientTest(
+client = RainbirdAPIClient(
     api_host="https://api.rainbird.ai",
     api_key="your-api-key",
     km_id="your-km-id"
