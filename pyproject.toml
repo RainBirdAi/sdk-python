@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rainbird_ai"  # must be unique on PyPI
+version = "0.0.1"
+description = "Python SDK for interacting with the Rainbird API"
+readme = "README.md"
+license = "MIT"
+authors = [
+    {name = "Julio Diez Tomillo", email = "julio@rainbird.ai"}
+]
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.25.0",
+]
+keywords = ["rainbird", "api", "sdk", "knowledge-map", "reasoning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
