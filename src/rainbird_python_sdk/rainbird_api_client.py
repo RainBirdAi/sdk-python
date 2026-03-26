@@ -1,8 +1,9 @@
-from typing import Dict, List, Any, Union
+from typing import Dict, List, Any, Union, Optional
 import requests
 
 
 AnswerDict = Dict[str, Any]
+QuestionDict = Dict[str, Any]
 AnswersInput = Union[AnswerDict, List[AnswerDict]]
 
 
@@ -20,6 +21,7 @@ class RainbirdAPIClient:
         self.api_key = api_key
         self.km_id = km_id
         self.session_id = None
+        self.last_question: Optional[QuestionDict] = None
         self.session = requests.Session()
 
     def _get_headers(
@@ -55,6 +57,17 @@ class RainbirdAPIClient:
         """Raise if there is no active session."""
         if not self.session_id:
             raise ValueError("Session not started. Call start() first.")
+
+    def _store_last_question(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Track the latest question returned by the API, if present.
+        Clear it when a final result is returned without a question.
+        """
+        if isinstance(result, dict) and "question" in result:
+            self.last_question = result["question"]
+        elif isinstance(result, dict) and "result" in result:
+            self.last_question = None
+        return result
 
     def _build_second_form_answer(
         self,
@@ -138,6 +151,7 @@ class RainbirdAPIClient:
 
         data = response.json()
         self.session_id = data.get("id")
+        self.last_question = None
         return data
 
     def inject(self, facts: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -199,13 +213,14 @@ class RainbirdAPIClient:
 
         response = self.session.post(url, headers=headers, json=body)
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        return self._store_last_question(result)
 
     def response(self, answers: AnswersInput) -> Dict[str, Any]:
         """
         Submit answers to questions posed by the reasoning engine.
 
-        This method now accepts either:
+        This method accepts either:
         - a single answer dictionary
         - a list of answer dictionaries
         """
@@ -219,7 +234,8 @@ class RainbirdAPIClient:
 
         response = self.session.post(url, headers=headers, json=body)
         response.raise_for_status()
-        return response.json()
+        result = response.json()
+        return self._store_last_question(result)
 
     def answer_first_form(
         self,
@@ -261,7 +277,7 @@ class RainbirdAPIClient:
 
     def answer_question(
         self,
-        question: Dict[str, Any],
+        question: QuestionDict,
         answer_or_answers: Union[Any, List[Any]],
         certainty: int = 100,
     ) -> Dict[str, Any]:
@@ -341,6 +357,30 @@ class RainbirdAPIClient:
             )
 
         raise ValueError(f"Unsupported question type: {question_type}")
+
+    def answer(
+        self,
+        answer_or_answers: Union[Any, List[Any]],
+        certainty: int = 100,
+    ) -> Dict[str, Any]:
+        """
+        Answer the most recent question returned by the reasoning engine.
+
+        This is a convenience method for the common flow:
+            result = client.query(...)
+            if 'question' in result:
+                client.answer("yes")
+
+        Args:
+            answer_or_answers: A single answer or multiple answers, depending on the question
+            certainty: Certainty level to apply to generated answers
+
+        Returns:
+            Response containing next questions or final results
+        """
+        if not self.last_question:
+            raise ValueError("No outstanding question to answer.")
+        return self.answer_question(self.last_question, answer_or_answers, certainty=certainty)
 
     def undo(self) -> Dict[str, Any]:
         """
