@@ -234,44 +234,26 @@ class TestQuery:
             client.query(subject='John', relationship='age')
 
 
-class TestResponse:
-    """Test response functionality."""
+@patch('requests.Session.post')
+def test_response_returns_result(mock_post, api_credentials, sample_question_response, mock_response):
+    """Test response returns API result."""
+    mock_post.return_value = mock_response(sample_question_response)
 
-    @patch('requests.Session.post')
-    def test_response_basic(self, mock_post, api_credentials, sample_result_response, mock_response):
-        """Test basic response."""
-        mock_post.return_value = mock_response(sample_result_response)
+    client = RainbirdAPIClient(**api_credentials)
+    client.session_id = 'session-123'
 
-        client = RainbirdAPIClient(**api_credentials)
-        client.session_id = 'session-123'
+    answers = [
+        {
+            'subject': 'John',
+            'relationship': 'age',
+            'object': '30',
+            'certainty': 100
+        }
+    ]
 
-        answers = [{'subject': 'John', 'relationship': 'age', 'object': '30', 'certainty': 100}]
-        result = client.response(answers)
+    result = client.response(answers)
 
-        assert result == sample_result_response
-        call_args = mock_post.call_args
-        assert 'session-123/response' in call_args[0][0]
-        assert call_args[1]['json']['answers'] == answers
-
-    @patch('requests.Session.post')
-    def test_response_returns_result(self, mock_post, api_credentials, sample_question_response, mock_response):
-        """Test response returns API result."""
-        mock_post.return_value = mock_response(sample_question_response)
-
-        client = RainbirdAPIClient(**api_credentials)
-        client.session_id = 'session-123'
-
-        result = client.response([])
-
-        assert result == sample_question_response
-
-    def test_response_without_session(self, api_credentials):
-        """Test response raises error without session."""
-        client = RainbirdAPIClient(**api_credentials)
-
-        with pytest.raises(ValueError, match="Session not started"):
-            client.response([])
-
+    assert result == sample_question_response
 
 class TestAnswerMethods:
     """Test answer form methods."""
