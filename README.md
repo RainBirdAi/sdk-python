@@ -2,15 +2,13 @@
 
 A Python SDK for interacting with the Rainbird API. This library provides a simple interface for working with Rainbird knowledge maps, allowing you to start sessions, inject facts, query knowledge, and interact with the reasoning engine.
 
+---
+
 ## Installation
 
 ```bash
 pip install rainbird-python-sdk
-```
-
-## Quick Start
-
-```python
+Quick Start
 from rainbird_python_sdk import RainbirdAPIClient
 
 # Initialise the client
@@ -40,16 +38,12 @@ result = client.query(
 
 # Handle questions
 if 'question' in result:
-    # Answer the question
-    response = client.answer(object_value="30", certainty=100)
+    # Answer the latest question directly
+    response = client.answer("30", certainty=100)
 
 # Close the session
 client.close()
-```
-
-## Using Context Manager
-
-```python
+Using Context Manager
 from rainbird_python_sdk import RainbirdAPIClient
 
 with RainbirdAPIClient(
@@ -60,199 +54,139 @@ with RainbirdAPIClient(
     client.start()
     result = client.query(subject="John", relationship="age")
     # Session automatically closed when exiting the context
-```
+Improved Question Handling
 
-## API Reference
+The SDK provides flexible and Pythonic ways to respond to questions from the reasoning engine.
 
-### Initialisation
-
-```python
+Key Features
+response() accepts:
+a single answer dictionary
+or a list of answer dictionaries
+High-level helper methods:
+answer_question() — answer a specific question
+answer() — answer the latest question automatically
+Built-in validation for incorrect or incomplete inputs
+API Reference
+Initialisation
 client = RainbirdAPIClient(api_host, api_key, km_id)
-```
+api_host: The Rainbird API host URL
+api_key: Your API key for authentication
+km_id: The knowledge map ID
+Core Methods
+start(use_draft=None, version=None)
 
-- `api_host`: The Rainbird API host URL
-- `api_key`: Your API key for authentication
-- `km_id`: The knowledge map ID to interact with
-
-### Core Methods
-
-#### `start(use_draft=None, version=None)`
 Start a new Rainbird session.
 
-- `use_draft`: Optional boolean to use draft version of knowledge map
-- `version`: Optional integer to specify knowledge map version
-- Returns: Session information dictionary
+Returns: Session information dictionary
 
-#### `inject(facts)`
+inject(facts)
+
 Inject multiple facts into the session.
 
-- `facts`: List of fact dictionaries with subject, relationship, object, and certainty
-- Returns: Response dictionary
+inject_fact(subject, relationship, object_value, certainty=100)
 
-#### `inject_fact(subject, relationship, object_value, certainty=100)`
-Inject a single fact into the session.
+Inject a single fact.
 
-- `subject`: The subject of the fact
-- `relationship`: The relationship/predicate
-- `object_value`: The object value
-- `certainty`: Certainty level (0-100), defaults to 100
-- Returns: Response dictionary
+query(subject=None, relationship=None, object=None)
 
-#### `query(subject=None, relationship=None, object=None)`
 Query the knowledge map.
 
-- `subject`: Optional subject to query
-- `relationship`: Relationship to query
-- `object`: Optional object to query
-- Returns: Query result, may include a question
+relationship is required
 
-#### `response(answers)`
-Provide answers to questions from the reasoning engine.
+Returns: May include question or result
 
-- `answers`: List of complete answer triplets with subject, relationship, object, and certainty
-- Returns: Response dictionary, may include follow-up questions
+response(answers)
 
-#### `answer_first_form(subject, relationship, object, object_value, certainty=100)`
-Answer a First Form question (yes/no questions).
+Provide answers to the reasoning engine.
 
-- `subject`: The subject from the question
-- `relationship`: The relationship from the question
-- `object`: The object being asked about
-- `object_value`: The answer ("yes" or "no")
-- `certainty`: Certainty level (0-100), defaults to 100
-- Returns: Response dictionary
+Accepts:
+a single answer dict
+or a list of answer dicts
+Each answer includes:
+subject
+relationship
+object
+certainty
+First Form answers also include:
+answer ("yes" / "no")
+answer_question(question, answer_or_answers, certainty=100)
 
-#### `answer_second_form(subject, relationship, object, certainty=100)`
-Answer a Second Form question (provide a value).
+Answer a specific question.
 
-- `subject`: The subject from the question
-- `relationship`: The relationship from the question
-- `object`: The answer value
-- `certainty`: Certainty level (0-100), defaults to 100
-- Returns: Response dictionary
+First Form → single value ("yes"/"no")
+Second Form → single value or list
+answer(answer_or_answers, certainty=100)
 
-#### `undo()`
-Undo the last action in the session.
+Answer the latest question automatically.
 
-- Returns: Response dictionary
+answer_first_form(...)
 
-### Natural Language Methods
+Answer a yes/no question.
 
-#### `interact(user_prompt)`
-Interact with the knowledge map using natural language.
+answer_second_form(...)
 
-- `user_prompt`: Natural language prompt
-- Returns: Response dictionary
+Answer a value-based question.
 
-#### `explain(fact_id, language='en')`
-Get a natural language explanation for a fact.
+undo()
 
-- `fact_id`: The ID of the fact to explain
-- `language`: Language code (default: 'en')
-- Returns: Explanation dictionary
+Undo the last action.
 
-### Analysis Methods
+Natural Language Methods
+interact(user_prompt)
 
-#### `evidence(fact_id, evidence_key=None)`
-Get evidence for a specific fact.
+Send natural language queries.
 
-- `fact_id`: The ID of the fact
-- `evidence_key`: Optional evidence key for authentication
-- Returns: Evidence dictionary
+explain(fact_id, language='en')
 
-#### `interaction_log(interaction_key=None, format='csv')`
-Get the interaction log for the session.
+Get explanation for a fact.
 
-- `interaction_key`: Optional interaction key
-- `format`: Format for the log (default: 'csv')
-- Returns: Interaction log as data
+Analysis Methods
+evidence(fact_id)
 
-#### `session_info(filters=None, relationships=None)`
-Get information about the current session.
+Get reasoning evidence.
 
-- `filters`: Optional list of filters
-- `relationships`: Optional list of relationships to include
-- Returns: Session information dictionary
+interaction_log(format='csv')
 
-### Platform Methods
+Get session interaction log.
 
-#### `version()`
-Get the Rainbird API version information.
+session_info()
 
-- Returns: Version information dictionary
+Get session details.
 
+Platform Methods
+version()
 
-## Example: Complete Workflow
+Get API version info.
 
-```python
-from rainbird_python_sdk import RainbirdAPIClient
-
-# Initialise
-client = RainbirdAPIClient(
-    api_host="https://api.rainbird.ai",
-    api_key="your-api-key",
-    km_id="your-km-id"
-)
-
-try:
-    # Start session
-    client.start(use_draft=False)
-
-    # Inject some facts
-    client.inject_fact("Alice", "know", "Python", certainty=100)
-    client.inject_fact("Alice", "has experience years", "5", certainty=95)
-
-    # Query (relationship is mandatory)
-    result = client.query(subject="Alice", relationship="has skill level")
-
-    # Handle questions interactively
-    while 'question' in result:
-        question = result['question']
-        print(f"Question: {question['prompt']}")
-
-        question_type = question.get('type', '')
-
-        # Handle based on question type
-        if 'First Form' in question_type:
-            # Yes/no question
-            result = client.answer_first_form(
-                subject=question['subject'],
-                relationship=question['relationship'],
-                object=question['object'],
-                object_value="yes",
-                certainty=90
-            )
-        else:
-            # Second Form - provide value
-            result = client.answer_second_form(
-                subject=question['subject'],
-                relationship=question['relationship'],
-                object="advanced",
-                certainty=90
-            )
-
-    # Get final results
-    if 'result' in result:
-        print(f"Results: {result['result']}")
-
-    # Get session information
-    session_info = client.session_info()
-    print(f"Session info: {session_info}")
-
-```
-
-## Example: Using `response()` Directly
-
-For advanced use cases, you can use the low-level `response()` method with complete answer triplets:
-
-```python
-# Start session
+Examples
+Using answer()
 client.start()
 
-# Query
+result = client.query(subject="John", relationship="age")
+
+if 'question' in result:
+    result = client.answer("30", certainty=100)
+Using answer_question()
+result = client.query(subject="John", relationship="skills")
+
+if 'question' in result:
+    question = result['question']
+    result = client.answer_question(question, "Python", certainty=100)
+Multiple Answers (Second Form)
+result = client.query(subject="John", relationship="skills")
+
+if 'question' in result:
+    question = result['question']
+    result = client.answer_question(
+        question,
+        ["Python", "SQL"],
+        certainty=100
+    )
+Advanced: Using response() directly
+client.start()
+
 result = client.query(relationship="employee_eligible")
 
-# Provide multiple answers at once using complete triplets
 if 'question' in result:
     question = result['question']
     client.response([
@@ -261,48 +195,26 @@ if 'question' in result:
             "relationship": question['relationship'],
             "object": "Spanish",
             "certainty": 100
-        },
-        {
-            "subject": question['subject'],
-            "relationship": question['relationship'],
-            "object": "French",
-            "certainty": 95
         }
     ])
-```
-
-## Error Handling
-
-The SDK raises standard Python exceptions:
-
-```python
+Error Handling
 try:
-    # Relationship is mandatory
     result = client.query(subject="test", relationship="age")
 except ValueError as e:
-    print(f"Value error: {e}")
-except requests.exceptions.HTTPError as e:
-    print(f"HTTP error: {e}")
+    print(e)
 except Exception as e:
-    print(f"Unexpected error: {e}")
-```
+    print(e)
+Requirements
+Python >= 3.8
+requests >= 2.25.0
+License
 
-## Requirements
+MIT License
 
-- Python >= 3.8
-- requests >= 2.25.0
+Support
+GitHub Issues: TODO
+Email: julio@rainbird.ai
+Docs: https://rainbird.redoc.ly/#operation/explain
+About Rainbird
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-For issues and questions:
-- GitHub Issues: TODO - Add GitHub link
-- Email: julio@rainbird.ai
-- Rainbird AI API Docs: https://rainbird.redoc.ly/#operation/explain
-
-## About Rainbird
-
-Rainbird is an AI platform that enables you to build knowledge maps for automated reasoning and decision-making. Visit [rainbird.ai](https://rainbird.ai) for more information.
+Rainbird is an AI platform for building knowledge maps for automated reasoning and decision-making.
