@@ -77,3 +77,6 @@ dmypy.json
 # Build artifacts
 *.whl
 *.tar.gz
+
+# Tooling caches
+.ruff_cache/
