@@ -31,7 +31,8 @@ pyproject.toml            hatchling build, deps, ruff/mypy/pytest config, `rainb
 src/rainbird_ai/
   __init__.py             public surface: re-exports + __all__ (add new public names here)
   _version.py             __version__ = "x.y.z"; single source of truth, read by hatchling
-  _http.py                UNSET sentinel (class Unset), normalize_base_url(), merge_headers(),
+  _http.py                UNSET sentinel (class Unset), ENGINE_CORE/ENGINE_BETA, normalize_base_url(),
+                          merge_headers(),
                           ClientConfig.resolve (env resolution, require_api_key=), RetryPolicy/
                           NO_RETRY, Request[T].with_headers, error-body parsing,
                           error_for_response(), json_body(), _BaseTransport(config, owns_client)
@@ -39,7 +40,8 @@ src/rainbird_ai/
   _ops.py                 ONE builder per endpoint, each returns Request[T]; the only place URLs,
                           params, headers, bodies and response parsers are defined
   _answers.py             pure question/answer protocol logic: SKIP, build_answers, build_skip,
-                          normalize_answers, normalize_facts, coerce_value, validate_certainty (no I/O)
+                          normalize_answers, normalize_facts (a fact's `metadata` dict is kept),
+                          coerce_value, validate_certainty (no I/O)
   models.py               frozen dataclasses (raw + from_dict), enums Environment/QuestionForm/
                           FactSource, parse_query_response(), studio_url_for()
   client.py               sync Rainbird (account level) + Session (one reasoning session), Answerer,
@@ -53,6 +55,8 @@ src/rainbird_ai/
 tests/
   conftest.py             FakeRainbird (in-memory API via httpx.MockTransport), fixtures, canned payloads
   test_*.py               unit tests against the fake; test_integration.py is opt-in (real API)
+  parity/                 tests ported from the Go and JS SDK suites (support.py helper, README.md with
+                          the case mapping and the behavioural differences they pin down)
 examples/                 runnable example scripts
 ```
 
@@ -64,7 +68,8 @@ examples/                 runnable example scripts
    `client.py`/`aio.py` knows a URL, a header name or a JSON key.
 2. **Sync and async clients are thin executors over `Request` objects.** Every client method is
    `self._send(_ops.something(...))` (sync) or `await self._send(_ops.something(...))` (async) plus
-   a little local state (`Session.last_response`). The transports in `_http.py` build the header
+   a little local state (`Session.last_response`); the per-call `headers=` of `query`/`respond`/
+   `undo`/`inject` is passed straight through as `_send(request, headers)` -> `extra_headers`. The transports in `_http.py` build the header
    set with `merge_headers(config.base_headers(), {"Accept": ...}, request.headers,
    extra_headers)` (case-insensitive, later layer wins, so `default_headers={"x-api-key": ...}`
    replaces `X-API-Key` instead of duplicating it; `base_headers()` is `User-Agent`, `X-API-Key`
@@ -159,7 +164,9 @@ RAINBIRD_API_KEY=... RAINBIRD_KM_ID=... .venv/bin/python -m pytest -m integratio
   `RainbirdConfigurationError`. A 2xx body in the wrong shape is
   `UnexpectedResponseError`: `json_body()` raises it for non-JSON or empty bodies (`"expected a
   JSON body from METHOD URL but got: '<200-char snippet>'"`, the `from ...` part omitted when
-  the response has no request attached), `_ops.start` for a 200 without a session id,
+  the response has no request attached), `parse_query_response()` for a decisions body that is
+  neither a question nor a result (`_ops._decision` re-raises it with the status code and any
+  error text from the body), `_ops.start` for a 200 without a session id,
   `_ops.interactions_json` for a 200 body that is neither a list, an envelope with a list under
   `values`/`events`/`interactions`, nor a single object with an `event` key (the message carries
   any error text found, e.g. a secured log returned as 200 `{"err": [...]}`), and `_ops.version`
@@ -382,7 +389,8 @@ async def test_first_form_async(aclient, fake):
 ### Undocumented endpoints - do not "fix" them to match the spec
 
 `GET /analysis/file/{kmID}` (`Rainbird.get_map_source`) and `POST /maps`
-(`Rainbird.create_map`, sends `Version: v1` and `{"rblang": ..., "name": ...}`) are **not** in
+(`Rainbird.create_map`, sends `Version: v1` and `{"rblang": ..., "name": ...}` plus
+`"description"` when one is given) are **not** in
 the OpenAPI spec. Their behaviour was supplied by the maintainer from the live platform:
 `/analysis/file` returns `{"concepts": [...], "rels": [...], "rblang": "<?xml ..."}`; `/maps`
 returns `{"kmID": "...", "id": 123, ...}` on success and **HTTP 200 with a singular `error`

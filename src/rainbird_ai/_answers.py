@@ -42,7 +42,7 @@ __all__ = [
 _YES = {"yes", "y", "true", "t", "1"}
 _NO = {"no", "n", "false", "f", "0"}
 _ANSWER_KEYS = {"subject", "relationship", "object", "certainty", "answer", "unanswered", "cf"}
-_FACT_KEYS = {"subject", "relationship", "object", "certainty", "cf"}
+_FACT_KEYS = {"subject", "relationship", "object", "certainty", "cf", "metadata"}
 _SCALAR = (str, int, float, bool)
 
 
@@ -408,6 +408,15 @@ def normalize_answers(answers: Any) -> list[dict[str, Any]]:
     return payload
 
 
+def _fact_metadata(value: Any) -> dict[str, Any] | None:
+    """``metadata`` travels with a fact as-is (``{"source": "system" | "user"}`` in the API)."""
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise InvalidFactError(f"fact metadata must be a dict, got {type(value).__name__}")
+    return dict(value)
+
+
 def _fact_from_any(item: Any) -> Fact:
     if isinstance(item, Fact):
         return Fact(
@@ -415,6 +424,7 @@ def _fact_from_any(item: Any) -> Fact:
             _text(item.relationship),
             coerce_value(item.object),
             validate_certainty(item.certainty),
+            metadata=_fact_metadata(item.metadata),
         )
     if isinstance(item, Mapping):
         unknown = set(item) - _FACT_KEYS
@@ -429,6 +439,7 @@ def _fact_from_any(item: Any) -> Fact:
             relationship=_text(item["relationship"]),
             object=coerce_value(item["object"]),
             certainty=validate_certainty(100 if certainty is None else certainty),
+            metadata=_fact_metadata(item.get("metadata")),
         )
     if isinstance(item, (tuple, list)) and 3 <= len(item) <= 4:
         subject, relationship, obj = item[0], item[1], item[2]

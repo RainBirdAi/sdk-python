@@ -520,7 +520,7 @@ def cmd_map_create(args: argparse.Namespace) -> None:
         with open(args.file, encoding="utf-8") as fh:
             rblang = fh.read()
     with _client(args) as rb:
-        result = rb.create_map(args.name, rblang)
+        result = rb.create_map(args.name, rblang, args.description)
     if args.json:
         _emit_json(result)
     else:
@@ -690,6 +690,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one statement 
         "create", help="create a knowledge map from an RBLang file", parents=[common]
     )
     mp.add_argument("--name", required=True)
+    mp.add_argument("--description", help="optional description stored with the map")
     mp.add_argument("--file", required=True, help="RBLang XML file, or '-' for stdin")
     mp.set_defaults(func=cmd_map_create)
 

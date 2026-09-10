@@ -43,6 +43,9 @@ T = TypeVar("T")
 
 USER_AGENT = f"rainbird-ai-python/{__version__} httpx/{httpx.__version__}"
 DEFAULT_BASE_URL = "https://api.rainbird.ai"
+# Engine names accepted by ``x-rainbird-engine`` (the same constants the JavaScript SDK exports).
+ENGINE_CORE = "Core"
+ENGINE_BETA = "Experimental (Beta)"
 DEFAULT_TIMEOUT = 30.0
 NL_VERSION = "v1"
 MAX_ERROR_MESSAGE = 300

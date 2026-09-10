@@ -1959,6 +1959,15 @@ class TestKnowledgeMaps:
         assert fake.last.headers["version"] == "v1"
         assert fake.last.headers["x-api-key"] == API_KEY
 
+    async def test_create_map_with_description(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        result = await rb.create_map("New map", RBLANG, description="Who speaks what")
+        assert fake.last.json == {
+            "rblang": RBLANG,
+            "name": "New map",
+            "description": "Who speaks what",
+        }
+        assert result.description == "Who speaks what"
+
     async def test_create_map_parse_failure_raises_knowledge_map_error(
         self, rb: AsyncRainbird, fake: FakeRainbird
     ) -> None:
@@ -2360,3 +2369,67 @@ class TestSyncAsyncParity:
         assert repr(rb) == f"AsyncRainbird(base_url={BASE_URL!r})"
         assert repr(client.resume("s1", km_id=KM_ID)) == f"Session(id='s1', km_id={KM_ID!r})"
         assert repr(rb.resume("s1", km_id=KM_ID)) == f"AsyncSession(id='s1', km_id={KM_ID!r})"
+
+
+# ------------------------------------------------------------ additions from the SDK parity round
+
+
+@pytest.mark.anyio
+class TestSiblingParityAdditionsAsync:
+    """Async twins of the features added after porting the Go and JS SDK test suites."""
+
+    async def test_inject_fact_source_is_sent_as_metadata(
+        self, rb: AsyncRainbird, fake: FakeRainbird
+    ) -> None:
+        session = await rb.start(KM_ID)
+        await session.inject_fact("Tom", "lives in", "Germany", source="system")
+        assert fake.last.json[0]["metadata"] == {"source": "system"}
+        await session.inject(Fact("A", "r", "x", metadata={"source": "user"}))
+        assert fake.last.json[0]["metadata"] == {"source": "user"}
+        with pytest.raises(InvalidFactError, match="metadata must be a dict"):
+            await session.inject(
+                {"subject": "A", "relationship": "r", "object": "x", "metadata": 1}
+            )
+
+    @pytest.mark.parametrize("method", ["query", "respond", "undo", "inject"])
+    async def test_per_call_headers_apply_to_that_request_only(
+        self, method: str, rb: AsyncRainbird, fake: FakeRainbird
+    ) -> None:
+        session = await rb.start(KM_ID)
+        headers = {"x-api-source": "natlang"}
+        if method == "query":
+            await session.query("speaks", subject="Tom", headers=headers)
+        elif method == "respond":
+            await session.respond(
+                {"subject": "Tom", "relationship": "speaks", "object": "German"}, headers=headers
+            )
+        elif method == "undo":
+            await session.undo(headers=headers)
+        else:
+            await session.inject(("Tom", "lives in", "Germany"), headers=headers)
+        assert fake.last.headers["x-api-source"] == "natlang"
+        assert fake.last.headers["x-api-key"] == API_KEY
+        await session.query("speaks", subject="Tom")
+        assert "x-api-source" not in fake.last.headers
+
+    async def test_async_engine_version_retry_no_retry_makes_one_attempt(
+        self, fake: FakeRainbird
+    ) -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(fake.handle)) as http:
+            fake.fail_next(500, body="Foobarbaz")
+            with pytest.raises(ServerError) as ei:
+                await async_engine_version(BASE_URL, http_client=http, retry=NO_RETRY)
+            assert ei.value.status_code == 500
+            assert len(fake.requests) == 1
+
+    async def test_async_engine_version_default_policy_still_retries(
+        self, fake: FakeRainbird, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def no_sleep(_delay: float) -> None:
+            return None
+
+        monkeypatch.setattr(anyio, "sleep", no_sleep)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(fake.handle)) as http:
+            fake.fail_next(500)
+            assert await async_engine_version(BASE_URL, http_client=http) == "4.89.0"
+            assert len(fake.requests) == 2

@@ -220,14 +220,15 @@ class Rainbird:
         result: KnowledgeMapSource = self._send(_ops.map_source(km_id))
         return result
 
-    def create_map(self, name: str, rblang: str) -> CreateMapResult:
+    def create_map(self, name: str, rblang: str, description: str | None = None) -> CreateMapResult:
         """Create a knowledge map from RBLang via ``POST /maps``.
 
-        Raises :class:`~rainbird_ai.errors.KnowledgeMapError` when Rainbird rejects the
-        RBLang (it replies HTTP 200 with an ``error`` key in that case). This endpoint
-        is not in the public OpenAPI specification and may change.
+        The body is ``{"rblang", "name", "description"}``; ``description`` is optional and
+        sent only when given. Raises :class:`~rainbird_ai.errors.KnowledgeMapError` when
+        Rainbird rejects the RBLang (it replies HTTP 200 with an ``error`` key in that case).
+        This endpoint is not in the public OpenAPI specification and may change.
         """
-        result: CreateMapResult = self._send(_ops.create_map(name, rblang))
+        result: CreateMapResult = self._send(_ops.create_map(name, rblang, description))
         return result
 
 
@@ -289,32 +290,50 @@ class Session:
 
     # -- decisions ---------------------------------------------------------------------
 
-    def inject(self, facts: Any, *, batch_size: int = MAX_INJECT_BATCH) -> InjectResponse:
+    def inject(
+        self,
+        facts: Any,
+        *,
+        batch_size: int = MAX_INJECT_BATCH,
+        headers: Mapping[str, str] | None = None,
+    ) -> InjectResponse:
         """Inject facts. Accepts a :class:`Fact`, a dict, a ``(s, r, o[, certainty])`` tuple,
         or a list of any of those. Large lists are sent in batches of ``batch_size``
         (Rainbird recommends at most 250 per request). Returns the last batch's response.
+        A fact may carry ``metadata`` (``{"source": "system" | "user"}``), forwarded as-is.
+        ``headers`` are extra HTTP headers for these requests only.
         """
         payload = normalize_facts(facts)
         if batch_size < 1:
             raise RainbirdConfigurationError("batch_size must be at least 1")
         response: InjectResponse | None = None
         for start in range(0, len(payload), batch_size):
-            response = self._send(_ops.inject(self.id, payload[start : start + batch_size]))
+            response = self._send(
+                _ops.inject(self.id, payload[start : start + batch_size]), headers
+            )
         assert response is not None  # payload is never empty (normalize_facts guarantees it)
         return response
 
     def inject_fact(
-        self, subject: str, relationship: str, object: Any, certainty: int | float = 100
+        self,
+        subject: str,
+        relationship: str,
+        object: Any,
+        certainty: int | float = 100,
+        *,
+        source: str | None = None,
     ) -> InjectResponse:
-        """Inject a single fact."""
-        return self.inject(
-            {
-                "subject": subject,
-                "relationship": relationship,
-                "object": object,
-                "certainty": certainty,
-            }
-        )
+        """Inject a single fact. ``source`` (``"system"`` or ``"user"``) is sent as
+        ``metadata.source`` and records where the fact came from."""
+        fact: dict[str, Any] = {
+            "subject": subject,
+            "relationship": relationship,
+            "object": object,
+            "certainty": certainty,
+        }
+        if source is not None:
+            fact["metadata"] = {"source": source}
+        return self.inject(fact)
 
     def query(
         self,
@@ -322,19 +341,22 @@ class Session:
         *,
         subject: Any = None,
         object: Any = None,
+        headers: Mapping[str, str] | None = None,
     ) -> QueryResponse:
         """Ask the engine about ``relationship``. Give the subject, the object, or both.
 
         Returns a :class:`QuestionResponse` (check ``.is_question``) when more information
-        is needed, or a :class:`ResultResponse` with the decision.
+        is needed, or a :class:`ResultResponse` with the decision. ``headers`` are extra HTTP
+        headers for this request only (``Rainbird(default_headers=...)`` applies to all).
         """
         return self._track(
-            self._send(_ops.query(self.id, relationship, subject=subject, object=object))
+            self._send(_ops.query(self.id, relationship, subject=subject, object=object), headers)
         )
 
-    def respond(self, answers: Any) -> QueryResponse:
-        """Send prebuilt answers (:class:`Answer` objects or dicts) to the engine."""
-        return self._track(self._send(_ops.respond(self.id, normalize_answers(answers))))
+    def respond(self, answers: Any, *, headers: Mapping[str, str] | None = None) -> QueryResponse:
+        """Send prebuilt answers (:class:`Answer` objects or dicts) to the engine.
+        ``headers`` are extra HTTP headers for this request only."""
+        return self._track(self._send(_ops.respond(self.id, normalize_answers(answers)), headers))
 
     def answer(
         self,
@@ -369,9 +391,10 @@ class Session:
             raise NoPendingQuestionError("there is no pending question to skip")
         return self.respond(build_skip(target, strict=strict))
 
-    def undo(self) -> QueryResponse:
-        """Roll back the last answers; returns the question (or result) that preceded them."""
-        return self._track(self._send(_ops.undo(self.id)))
+    def undo(self, *, headers: Mapping[str, str] | None = None) -> QueryResponse:
+        """Roll back the last answers; returns the question (or result) that preceded them.
+        ``headers`` are extra HTTP headers for this request only."""
+        return self._track(self._send(_ops.undo(self.id), headers))
 
     def run(
         self,
@@ -524,10 +547,12 @@ def engine_version(
     engine: str | None = None,
     timeout: float | httpx.Timeout | Unset | None = UNSET,
     http_client: httpx.Client | None = None,
+    retry: RetryPolicy | None = None,
 ) -> str:
     """Engine version from ``GET /version`` without an API key (the endpoint is public).
 
-    ``base_url`` defaults to ``RAINBIRD_API_URL`` or the Community host.
+    ``base_url`` defaults to ``RAINBIRD_API_URL`` or the Community host. ``retry`` defaults
+    to :class:`RetryPolicy` (pass :data:`NO_RETRY` for a single attempt).
     """
     config = ClientConfig.resolve(
         api_key="",
@@ -536,7 +561,7 @@ def engine_version(
         interaction_key=None,
         engine=engine,
         timeout=timeout,
-        retry=None,
+        retry=retry,
         default_headers=None,
         require_api_key=False,
     )

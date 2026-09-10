@@ -7,6 +7,39 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+Closes the gaps found by porting the Go and JavaScript SDK test suites to this package
+(`tests/parity/`, see its README for the full comparison).
+
+### Added
+
+- Injected facts may carry `metadata` (the API uses `{"source": "system" | "user"}` to record
+  where a fact came from): `Fact(metadata=...)`, a `metadata` key in fact dicts, and
+  `inject_fact(..., source="user")`. A `metadata` that is not a dict raises `InvalidFactError`.
+- `headers=` on `Session.query()`, `respond()`, `undo()` and `inject()` (and the async twins)
+  for extra HTTP headers on one request; `Rainbird(default_headers=...)` still applies to all.
+- `retry=` on `engine_version()` / `async_engine_version()` (default `RetryPolicy()`; pass
+  `NO_RETRY` for a single attempt), matching `Rainbird(retry=...)`.
+- `ENGINE_CORE` (`"Core"`) and `ENGINE_BETA` (`"Experimental (Beta)"`), the engine names the
+  JavaScript SDK exports for the `x-rainbird-engine` header.
+- `create_map(name, rblang, description=None)` (sync and async) sends an optional
+  `"description"` in the undocumented `POST /maps` body; `CreateMapResult.description` carries
+  it back. The CLI gains `rainbird map create --description`.
+
+### Changed
+
+- `parse_query_response()` raises `UnexpectedResponseError` (with the payload on `.body`)
+  instead of a bare `ValueError` for a body that is neither a question nor a result.
+- `str()` of a `Question` without a prompt, a `ResultItem` or a `SessionFact` renders a missing
+  subject or object as `?` instead of the literal `None`, and no longer leaves double spaces.
+- `KnowledgeMapVersion.version_number` returns the API's explicit `versionNumber` when present,
+  falling back to parsing `versionStatus` (`"Version3"` -> 3, drafts -> `None`) as before.
+
+### Fixed
+
+- `Evidence.fact.source` is now populated from the evidence envelope (as `fact.id` already
+  was), so a `SessionFact` taken from evidence carries the same fields as one from
+  `session.facts()`.
+
 ## [1.0.0] - 2026-09-03
 
 Complete rewrite of the SDK. The `rainbird_python_sdk` package and its `RainbirdAPIClient`

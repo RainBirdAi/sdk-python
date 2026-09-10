@@ -17,7 +17,7 @@ import pytest
 
 from rainbird_ai import Rainbird
 from rainbird_ai.aio import AsyncRainbird
-from rainbird_ai.errors import NaturalLanguageError
+from rainbird_ai.errors import NaturalLanguageError, RainbirdError, UnexpectedResponseError
 from rainbird_ai.models import (
     Answer,
     Concept,
@@ -1210,7 +1210,7 @@ class TestResultItem:
         assert item.relationship == ""
         assert item.certainty is None
         assert item.fact_id is None
-        assert str(item) == "None  None"
+        assert str(item) == "? ?"
 
     def test_certainty_string_and_float(self) -> None:
         assert ResultItem.from_dict({"certainty": "75"}).certainty == 75
@@ -1340,22 +1340,33 @@ class TestParseQueryResponse:
         parsed = parse_query_response({"question": None, "result": []})
         assert isinstance(parsed, ResultResponse)
 
-    def test_neither_raises_value_error_listing_keys(self) -> None:
-        with pytest.raises(ValueError, match=r"neither.*\['err', 'foo'\]"):
-            parse_query_response({"foo": 1, "err": ["bad"]})
+    def test_neither_raises_unexpected_response_listing_keys(self) -> None:
+        body = {"foo": 1, "err": ["bad"]}
+        with pytest.raises(UnexpectedResponseError, match=r"neither.*\['err', 'foo'\]") as ei:
+            parse_query_response(body)
+        assert ei.value.body is body
+        assert ei.value.status_code is None  # no HTTP response involved at this level
 
     def test_empty_dict_raises(self) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(UnexpectedResponseError):
             parse_query_response({})
 
     @pytest.mark.parametrize("body", [None, [], "text", 42, [{"result": []}]])
     def test_non_dict_raises(self, body: Any) -> None:
-        with pytest.raises(ValueError, match="unexpected response body type"):
+        with pytest.raises(UnexpectedResponseError, match="unexpected response body type") as ei:
             parse_query_response(body)
+        assert ei.value.body == body
 
     def test_question_that_is_not_a_dict_and_no_result_raises(self) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(UnexpectedResponseError):
             parse_query_response({"question": "what?"})
+
+    def test_does_not_raise_a_bare_value_error(self) -> None:
+        # Public code paths raise RainbirdError subclasses only (UnexpectedResponseError is not
+        # a ValueError), so callers can catch RainbirdError uniformly.
+        with pytest.raises(RainbirdError):
+            parse_query_response({"foo": 1})
+        assert not issubclass(UnexpectedResponseError, ValueError)
 
 
 # --------------------------------------------------------------------------- FactValue / SessionFact
@@ -1434,7 +1445,7 @@ class TestSessionFact:
         fact = SessionFact.from_dict({})
         assert fact.relationship == ""
         assert fact.certainty is None
-        assert str(fact) == "None  None"
+        assert str(fact) == "? ?"
 
     def test_str_without_certainty(self) -> None:
         fact = SessionFact.from_dict(
@@ -2629,3 +2640,130 @@ class TestModelsThroughClient:
         assert result.best is not None
         assert result.best.object == "German"
         await aclient.aclose()
+
+
+# ------------------------------------------------------------ additions from the SDK parity round
+
+
+class TestStringPlaceholders:
+    """A missing subject or object renders as ``?`` (as the Go SDK does), never ``None``."""
+
+    def test_question_fallback_marks_unknown_sides(self) -> None:
+        assert str(Question.from_dict({"subject": "John", "relationship": "speaks"})) == (
+            "John speaks ?"
+        )
+        assert str(Question.from_dict({"relationship": "lives in", "object": "England"})) == (
+            "? lives in England"
+        )
+        assert str(Question.from_dict({"relationship": "lives in", "object": ""})) == (
+            "? lives in ?"
+        )
+        assert str(Question.from_dict({})) == "? ?"
+
+    def test_question_prompt_still_wins(self) -> None:
+        q = Question.from_dict({"prompt": "Who lives in England?", "relationship": "lives in"})
+        assert str(q) == "Who lives in England?"
+
+    def test_result_item_marks_unknown_sides(self) -> None:
+        assert str(ResultItem.from_dict({"subject": "John", "relationship": "speaks"})) == (
+            "John speaks ?"
+        )
+        item = ResultItem.from_dict(
+            {"subject": "", "relationship": "", "object": None, "certainty": 0}
+        )
+        assert str(item) == "? ? (0%)"
+        assert "None" not in str(ResultItem.from_dict({}))
+
+    def test_result_item_keeps_real_values_and_numbers(self) -> None:
+        item = ResultItem.from_dict(
+            {"subject": "John", "relationship": "favourite number", "object": 0, "certainty": 35}
+        )
+        assert str(item) == "John favourite number 0 (35%)"  # 0 is a value, not "unknown"
+
+    def test_session_fact_marks_unknown_sides(self) -> None:
+        fact = SessionFact.from_dict({"subject": {"value": "Tom"}, "relationship": "speaks"})
+        assert str(fact) == "Tom speaks ?"
+        assert "None" not in str(SessionFact.from_dict({}))
+
+
+class TestFactMetadataPayload:
+    def test_metadata_is_omitted_when_unset(self) -> None:
+        assert "metadata" not in Fact("Tom", "lives in", "Germany").to_payload()
+
+    def test_metadata_is_sent_and_copied(self) -> None:
+        meta = {"source": "user", "extra": {"k": 1}}
+        payload = Fact("Tom", "lives in", "Germany", metadata=meta).to_payload()
+        assert payload["metadata"] == meta
+        assert payload["metadata"] is not meta
+        assert payload["metadata"]["extra"] is not meta["extra"]
+
+
+class TestEvidenceFactSource:
+    BODY = {
+        "factID": "WA:RF:1",
+        "source": "rule",
+        "fact": {
+            "subject": {"type": "Person", "value": "Dan", "dataType": "string"},
+            "relationship": {"type": "speaks"},
+            "object": {"type": "Language", "value": "German", "dataType": "string"},
+            "certainty": 100,
+        },
+        "time": 1,
+    }
+
+    def test_envelope_source_is_copied_onto_the_fact(self) -> None:
+        evidence = Evidence.from_dict(self.BODY)
+        assert evidence.source is FactSource.RULE
+        assert evidence.fact.id == "WA:RF:1"
+        assert evidence.fact.source is FactSource.RULE
+
+    def test_facts_own_source_wins(self) -> None:
+        body = {**self.BODY, "fact": {**self.BODY["fact"], "source": "injection"}}
+        evidence = Evidence.from_dict(body)
+        assert evidence.source is FactSource.RULE
+        assert evidence.fact.source is FactSource.INJECTION
+
+    def test_no_source_anywhere_stays_none(self) -> None:
+        body = {k: v for k, v in self.BODY.items() if k != "source"}
+        evidence = Evidence.from_dict(body)
+        assert evidence.source is None
+        assert evidence.fact.source is None
+        assert evidence.raw is body  # the envelope itself is untouched
+
+
+class TestKnowledgeMapVersionExplicitNumber:
+    @pytest.mark.parametrize(
+        ("value", "status", "expected"),
+        [
+            (3, "Draft", 3),  # explicit number wins over the status
+            (5, "Version3", 5),
+            (7.0, "Draft", 7),
+            ("12", "Draft", 12),
+            (None, "Version3", 3),  # falls back to the status
+            (None, "Draft", None),
+            (True, "Version2", 2),  # bools are not version numbers
+            ("three", "Version2", 2),
+            (2.5, "Draft", None),
+        ],
+    )
+    def test_explicit_version_number(self, value: Any, status: str, expected: int | None) -> None:
+        km = {"id": "k", "versionStatus": status}
+        if value is not None:
+            km["versionNumber"] = value
+        assert KnowledgeMapVersion.from_dict({"km": km}).version_number == expected
+        assert KnowledgeMapVersion.from_dict(km).version_number == expected  # unwrapped body
+
+    def test_is_draft_is_independent_of_the_number(self) -> None:
+        km = KnowledgeMapVersion.from_dict({"km": {"versionStatus": "Draft", "versionNumber": 3}})
+        assert km.is_draft is True
+        assert km.version_number == 3
+
+
+class TestCreateMapResultDescription:
+    def test_description_from_response_or_argument(self) -> None:
+        body = {"kmID": "k", "id": 1}
+        assert CreateMapResult.from_dict(body).description is None
+        assert CreateMapResult.from_dict(body, description="mine").description == "mine"
+        echoed = {**body, "description": "theirs"}
+        assert CreateMapResult.from_dict(echoed, description="mine").description == "theirs"
+        assert CreateMapResult.from_dict(echoed).raw is echoed

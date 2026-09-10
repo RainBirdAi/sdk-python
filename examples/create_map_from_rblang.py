@@ -41,7 +41,7 @@ def main() -> None:
 
     with Rainbird() as rb:  # reads RAINBIRD_API_KEY / RAINBIRD_API_URL
         try:
-            created = rb.create_map(name, RBLANG)
+            created = rb.create_map(name, RBLANG, description="Created by the SDK example")
         except KnowledgeMapError as exc:
             # HTTP 200 with {"error": "..."}: Rainbird's parser rejected the RBLang.
             print(f"Rainbird rejected the RBLang: {exc.message}")

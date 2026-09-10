@@ -182,9 +182,11 @@ class AsyncRainbird:
         result: KnowledgeMapSource = await self._send(_ops.map_source(km_id))
         return result
 
-    async def create_map(self, name: str, rblang: str) -> CreateMapResult:
-        """Create a knowledge map via ``POST /maps`` (undocumented endpoint)."""
-        result: CreateMapResult = await self._send(_ops.create_map(name, rblang))
+    async def create_map(
+        self, name: str, rblang: str, description: str | None = None
+    ) -> CreateMapResult:
+        """Async version of :meth:`rainbird_ai.Rainbird.create_map` (undocumented endpoint)."""
+        result: CreateMapResult = await self._send(_ops.create_map(name, rblang, description))
         return result
 
 
@@ -242,29 +244,44 @@ class AsyncSession:
 
     # -- decisions ---------------------------------------------------------------------
 
-    async def inject(self, facts: Any, *, batch_size: int = MAX_INJECT_BATCH) -> InjectResponse:
+    async def inject(
+        self,
+        facts: Any,
+        *,
+        batch_size: int = MAX_INJECT_BATCH,
+        headers: Mapping[str, str] | None = None,
+    ) -> InjectResponse:
         """Async version of :meth:`rainbird_ai.Session.inject`."""
         payload = normalize_facts(facts)
         if batch_size < 1:
             raise RainbirdConfigurationError("batch_size must be at least 1")
         response: InjectResponse | None = None
         for start in range(0, len(payload), batch_size):
-            response = await self._send(_ops.inject(self.id, payload[start : start + batch_size]))
+            response = await self._send(
+                _ops.inject(self.id, payload[start : start + batch_size]), headers
+            )
         assert response is not None
         return response
 
     async def inject_fact(
-        self, subject: str, relationship: str, object: Any, certainty: int | float = 100
+        self,
+        subject: str,
+        relationship: str,
+        object: Any,
+        certainty: int | float = 100,
+        *,
+        source: str | None = None,
     ) -> InjectResponse:
         """Async version of :meth:`rainbird_ai.Session.inject_fact`."""
-        return await self.inject(
-            {
-                "subject": subject,
-                "relationship": relationship,
-                "object": object,
-                "certainty": certainty,
-            }
-        )
+        fact: dict[str, Any] = {
+            "subject": subject,
+            "relationship": relationship,
+            "object": object,
+            "certainty": certainty,
+        }
+        if source is not None:
+            fact["metadata"] = {"source": source}
+        return await self.inject(fact)
 
     async def query(
         self,
@@ -272,15 +289,22 @@ class AsyncSession:
         *,
         subject: Any = None,
         object: Any = None,
+        headers: Mapping[str, str] | None = None,
     ) -> QueryResponse:
         """Async version of :meth:`rainbird_ai.Session.query`."""
         return self._track(
-            await self._send(_ops.query(self.id, relationship, subject=subject, object=object))
+            await self._send(
+                _ops.query(self.id, relationship, subject=subject, object=object), headers
+            )
         )
 
-    async def respond(self, answers: Any) -> QueryResponse:
+    async def respond(
+        self, answers: Any, *, headers: Mapping[str, str] | None = None
+    ) -> QueryResponse:
         """Async version of :meth:`rainbird_ai.Session.respond`."""
-        return self._track(await self._send(_ops.respond(self.id, normalize_answers(answers))))
+        return self._track(
+            await self._send(_ops.respond(self.id, normalize_answers(answers)), headers)
+        )
 
     async def answer(
         self,
@@ -307,9 +331,9 @@ class AsyncSession:
             raise NoPendingQuestionError("there is no pending question to skip")
         return await self.respond(build_skip(target, strict=strict))
 
-    async def undo(self) -> QueryResponse:
+    async def undo(self, *, headers: Mapping[str, str] | None = None) -> QueryResponse:
         """Async version of :meth:`rainbird_ai.Session.undo`."""
-        return self._track(await self._send(_ops.undo(self.id)))
+        return self._track(await self._send(_ops.undo(self.id), headers))
 
     async def run(
         self,
@@ -450,6 +474,7 @@ async def async_engine_version(
     engine: str | None = None,
     timeout: float | httpx.Timeout | Unset | None = UNSET,
     http_client: httpx.AsyncClient | None = None,
+    retry: RetryPolicy | None = None,
 ) -> str:
     """Async version of :func:`rainbird_ai.engine_version` (no API key needed)."""
     config = ClientConfig.resolve(
@@ -459,7 +484,7 @@ async def async_engine_version(
         interaction_key=None,
         engine=engine,
         timeout=timeout,
-        retry=None,
+        retry=retry,
         default_headers=None,
         require_api_key=False,
     )

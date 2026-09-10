@@ -2042,3 +2042,51 @@ class TestNormalizeFacts:
         with pytest.raises(InvalidAnswerError, match="NoneType"):
             session.inject(("Tom", "lives in", None))
         assert fake.calls("/inject") == []
+
+
+# --------------------------------------------------------------- fact metadata (sibling parity)
+
+
+class TestFactMetadata:
+    """``metadata`` travels with an injected fact (the Go SDK sends ``metadata.source``)."""
+
+    def test_dict_metadata_passes_through_untouched(self) -> None:
+        meta = {"source": "system", "nested": {"a": [1]}}
+        [payload] = normalize_facts({**FACT_DICT, "metadata": meta})
+        assert payload == {**FACT_PAYLOAD, "metadata": meta}
+        assert payload["metadata"] is not meta  # a copy, so later edits do not leak in
+        assert payload["metadata"]["nested"] is not meta["nested"]
+
+    def test_fact_object_metadata_is_kept(self) -> None:
+        fact = Fact("Tom", "lives in", "Germany", metadata={"source": "user"})
+        assert normalize_facts(fact) == [{**FACT_PAYLOAD, "metadata": {"source": "user"}}]
+        assert normalize_facts([fact, FACT_DICT]) == [
+            {**FACT_PAYLOAD, "metadata": {"source": "user"}},
+            FACT_PAYLOAD,
+        ]
+
+    def test_metadata_none_is_omitted(self) -> None:
+        assert normalize_facts({**FACT_DICT, "metadata": None}) == [FACT_PAYLOAD]
+        assert normalize_facts(Fact("Tom", "lives in", "Germany", metadata=None)) == [FACT_PAYLOAD]
+
+    @pytest.mark.parametrize("bad", ["user", 1, ["source"], True])
+    def test_non_dict_metadata_is_rejected(self, bad: Any) -> None:
+        with pytest.raises(InvalidFactError, match="fact metadata must be a dict"):
+            normalize_facts({**FACT_DICT, "metadata": bad})
+        with pytest.raises(InvalidFactError, match="fact metadata must be a dict"):
+            normalize_facts(Fact("Tom", "lives in", "Germany", metadata=bad))
+
+    def test_tuples_have_no_metadata(self) -> None:
+        assert normalize_facts(("Tom", "lives in", "Germany")) == [FACT_PAYLOAD]
+
+    def test_metadata_is_not_an_answer_key(self) -> None:
+        with pytest.raises(InvalidFactError, match=r"unexpected field\(s\): metadata$"):
+            normalize_answers({**ANSWER_DICT, "metadata": {"source": "user"}})
+
+    def test_inject_fact_source_sends_metadata(self, client: Rainbird, fake: FakeRainbird) -> None:
+        session = client.start(KM_ID)
+        session.inject_fact("Tom", "lives in", "Germany", source="user")
+        session.inject_fact("Tom", "lives in", "Germany")
+        sent = fake.sessions[session.id]["facts"]
+        assert sent[0] == {**FACT_PAYLOAD, "metadata": {"source": "user"}}
+        assert sent[1] == FACT_PAYLOAD

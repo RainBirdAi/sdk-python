@@ -49,9 +49,10 @@ def _decision(response: httpx.Response) -> QueryResponse:
     body = json_body(response)
     try:
         return parse_query_response(body)
-    except ValueError as exc:
+    except UnexpectedResponseError as exc:
+        # Re-raise with the HTTP status and any error text the body carries (e.g. {"err": [...]}).
         errors = extract_error_messages(body)
-        message = errors[0] if errors else str(exc)
+        message = errors[0] if errors else exc.message
         raise UnexpectedResponseError(message, body=body, status_code=response.status_code) from exc
 
 
@@ -356,8 +357,11 @@ def map_source(km_id: str) -> Request[KnowledgeMapSource]:
     return Request(method="GET", path=f"analysis/file/{segment}", parse=parse)
 
 
-def create_map(name: str, rblang: str) -> Request[CreateMapResult]:
+def create_map(name: str, rblang: str, description: str | None = None) -> Request[CreateMapResult]:
     """``POST /maps``: create a knowledge map from RBLang. Not in the public OpenAPI spec.
+
+    The body is ``{"rblang": ..., "name": ..., "description": ...}``; ``description`` is sent
+    only when given.
 
     Rainbird answers HTTP 200 even when the RBLang fails to parse, signalling the
     failure with an ``error`` key; the parser turns that into
@@ -377,17 +381,14 @@ def create_map(name: str, rblang: str) -> Request[CreateMapResult]:
                 errors[0] if len(errors) == 1 else "; ".join(errors), errors=errors, body=data
             )
         try:
-            return CreateMapResult.from_dict(data, name=clean_name)
+            return CreateMapResult.from_dict(data, name=clean_name, description=description)
         except ValueError as exc:
             hints = extract_error_messages(data)
             raise UnexpectedResponseError(
                 hints[0] if hints else str(exc), body=data, status_code=response.status_code
             ) from exc
 
-    return Request(
-        method="POST",
-        path="maps",
-        json={"rblang": clean_rblang, "name": clean_name},
-        headers=_NL_HEADERS,
-        parse=parse,
-    )
+    body: dict[str, Any] = {"rblang": clean_rblang, "name": clean_name}
+    if description is not None:
+        body["description"] = description
+    return Request(method="POST", path="maps", json=body, headers=_NL_HEADERS, parse=parse)

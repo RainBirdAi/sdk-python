@@ -19,7 +19,7 @@ Async: ``from rainbird_ai.aio import AsyncRainbird``. Engine version without a k
 from __future__ import annotations
 
 from ._answers import SKIP, build_answers, build_skip
-from ._http import DEFAULT_BASE_URL, NO_RETRY, UNSET, RetryPolicy
+from ._http import DEFAULT_BASE_URL, ENGINE_BETA, ENGINE_CORE, NO_RETRY, UNSET, RetryPolicy
 from ._version import __version__
 from .aio import AsyncAnswerer, AsyncRainbird, AsyncSession, async_engine_version
 from .client import Answerer, Rainbird, Session, engine_version
@@ -78,6 +78,8 @@ from .models import (
 
 __all__ = [
     "DEFAULT_BASE_URL",
+    "ENGINE_BETA",
+    "ENGINE_CORE",
     "NO_RETRY",
     "SKIP",
     "UNSET",

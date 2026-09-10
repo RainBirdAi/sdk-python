@@ -1930,6 +1930,29 @@ class TestMapCreate:
         assert result.out == NEW_KM_ID + "\n"
         assert fake.last.json == {"rblang": RBLANG, "name": "From stdin"}
 
+    def test_description_is_sent_when_given(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "map.rbl"
+        path.write_text(RBLANG, encoding="utf-8")
+        result = run(
+            "map",
+            "create",
+            "--name",
+            "My map",
+            "--description",
+            "Who speaks what",
+            "--file",
+            str(path),
+        )
+        assert result.code == 0, result.err
+        assert result.out == NEW_KM_ID + "\n"
+        assert fake.last.json == {
+            "rblang": RBLANG,
+            "name": "My map",
+            "description": "Who speaks what",
+        }
+
     def test_json_output(self, run: Runner, fake: FakeRainbird, tmp_path: Path) -> None:
         path = tmp_path / "map.rbl"
         path.write_text(RBLANG, encoding="utf-8")

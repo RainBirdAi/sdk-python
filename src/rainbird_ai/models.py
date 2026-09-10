@@ -23,7 +23,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from .errors import NaturalLanguageError
+from .errors import NaturalLanguageError, UnexpectedResponseError
 
 __all__ = [
     "Answer",
@@ -153,6 +153,11 @@ def _as_number(value: Any) -> int | float | None:
     return None
 
 
+def _part(value: Any) -> str:
+    """Render one side of a triple for ``__str__``; an unknown side (``None``/``""``) is ``?``."""
+    return "?" if value is None or value == "" else str(value)
+
+
 class _RawMixin:
     raw: JSON
 
@@ -255,14 +260,20 @@ class Fact:
     relationship: str
     object: Any
     certainty: int | float = 100
+    metadata: JSON | None = None
+    """Optional ``metadata`` sent with the fact; the API uses ``{"source": "system" | "user"}``
+    to record whether the fact came from another system (the default) or from a person."""
 
     def to_payload(self) -> JSON:
-        return {
+        payload: JSON = {
             "subject": self.subject,
             "relationship": self.relationship,
             "object": self.object,
             "certainty": self.certainty,
         }
+        if self.metadata is not None:
+            payload["metadata"] = copy.deepcopy(self.metadata)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -455,7 +466,10 @@ class Question(_RawMixin):
         return (self.data_type or "").lower() == "truth"
 
     def __str__(self) -> str:
-        return self.prompt or f"{self.subject} {self.relationship} {self.object}".strip()
+        if self.prompt:
+            return self.prompt
+        parts = [_part(self.subject), self.relationship, _part(self.object)]
+        return " ".join(p for p in parts if p)
 
 
 @dataclass(frozen=True)
@@ -528,7 +542,8 @@ class ResultItem(_RawMixin):
 
     def __str__(self) -> str:
         cert = f" ({self.certainty}%)" if self.certainty is not None else ""
-        return f"{self.subject} {self.relationship} {self.object}{cert}"
+        parts = [_part(self.subject), self.relationship, _part(self.object)]
+        return " ".join(p for p in parts if p) + cert
 
 
 @dataclass(frozen=True)
@@ -580,17 +595,20 @@ QueryResponse = QuestionResponse | ResultResponse
 def parse_query_response(data: Any) -> QueryResponse:
     """Classify a decisions-endpoint body as a question or a result.
 
-    Raises ``ValueError`` when the body is neither, so callers can surface the raw
-    payload instead of guessing.
+    Raises :class:`~rainbird_ai.UnexpectedResponseError` (with the body on ``.body``) when it
+    is neither, so callers can surface the raw payload instead of guessing.
     """
     if not isinstance(data, dict):
-        raise ValueError(f"unexpected response body type: {type(data).__name__}")
+        raise UnexpectedResponseError(
+            f"unexpected response body type: {type(data).__name__}", body=data
+        )
     if isinstance(data.get("question"), dict):
         return QuestionResponse.from_dict(data)
     if "result" in data:
         return ResultResponse.from_dict(data)
-    raise ValueError(
-        f"response is neither a questionResponse nor a resultResponse (keys: {sorted(data.keys())})"
+    keys = sorted(data.keys())
+    raise UnexpectedResponseError(
+        f"response is neither a questionResponse nor a resultResponse (keys: {keys})", body=data
     )
 
 
@@ -650,7 +668,8 @@ class SessionFact(_RawMixin):
 
     def __str__(self) -> str:
         cert = f" ({self.certainty}%)" if self.certainty is not None else ""
-        return f"{self.subject} {self.relationship} {self.object}{cert}"
+        parts = [_part(self.subject.value), self.relationship, _part(self.object.value)]
+        return " ".join(p for p in parts if p) + cert
 
 
 @dataclass(frozen=True)
@@ -712,7 +731,18 @@ class KnowledgeMapVersion(_RawMixin):
 
     @property
     def version_number(self) -> int | None:
-        """``3`` for ``versionStatus == "Version3"``, ``None`` for drafts."""
+        """The explicit ``versionNumber`` when the API sends one, else ``3`` for
+        ``versionStatus == "Version3"`` and ``None`` for drafts."""
+        km = _as_dict(_get(self.raw, "km")) or self.raw
+        explicit = _get(km, "versionNumber")
+        if isinstance(explicit, bool):
+            explicit = None
+        if isinstance(explicit, int):
+            return explicit
+        if isinstance(explicit, float) and explicit.is_integer():
+            return int(explicit)
+        if isinstance(explicit, str) and explicit.strip().isdigit():
+            return int(explicit.strip())
         status = (self.version_status or "").lower()
         digits = "".join(ch for ch in status if ch.isdigit())
         return int(digits) if status.startswith("version") and digits else None
@@ -840,10 +870,15 @@ class Evidence(_RawMixin):
     def from_dict(cls, data: JSON) -> Evidence:
         fact_data = _as_dict(_get(data, "fact"))
         rule_data = _get(data, "rule")
+        # The envelope carries the fact's id and source; copy both onto the nested fact so a
+        # SessionFact from evidence looks like one from ``/analysis/session?filter=facts``.
+        fact_payload = {**fact_data, "id": _get(data, "factID")}
+        if fact_payload.get("source") is None and _get(data, "source") is not None:
+            fact_payload["source"] = _get(data, "source")
         return cls(
             fact_id=str(_get(data, "factID", "factId", "id", default="")),
             source=FactSource.parse(_get(data, "source")),
-            fact=SessionFact.from_dict({**fact_data, "id": _get(data, "factID")}),
+            fact=SessionFact.from_dict(fact_payload),
             time=_as_number(_get(data, "time")),
             rule=Rule.from_dict(rule_data) if isinstance(rule_data, dict) else None,
             raw=data,
@@ -1106,16 +1141,20 @@ class CreateMapResult(_RawMixin):
     """Result of ``POST /maps`` (create a knowledge map from RBLang).
 
     This endpoint is not part of the public OpenAPI specification and may change.
-    ``km_id`` is the GUID to use with ``start()``; ``id`` is Rainbird's numeric id.
+    ``km_id`` is the GUID to use with ``start()``; ``id`` is Rainbird's numeric id. ``name``
+    and ``description`` come from the response when it echoes them, else from the request.
     """
 
     km_id: str
     name: str | None
     id: str | int | None = None
+    description: str | None = None
     raw: JSON = field(repr=False, default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: JSON, *, name: str | None = None) -> CreateMapResult:
+    def from_dict(
+        cls, data: JSON, *, name: str | None = None, description: str | None = None
+    ) -> CreateMapResult:
         km_id = _get(data, "kmID", "kmid", "kmId", "mapId", "knowledge_map_id")
         numeric_id = _get(data, "id")
         if km_id is None:
@@ -1126,5 +1165,6 @@ class CreateMapResult(_RawMixin):
             km_id=str(km_id),
             name=_get(data, "name", default=name),
             id=numeric_id,
+            description=_get(data, "description", default=description),
             raw=data,
         )

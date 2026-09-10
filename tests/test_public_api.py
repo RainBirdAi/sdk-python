@@ -925,7 +925,9 @@ class TestSyncAsyncParity:
             "engine",
             "timeout",
             "http_client",
+            "retry",
         ]
+        assert inspect.signature(engine_version).parameters["retry"].default is None
         assert inspect.signature(engine_version).parameters["timeout"].default is UNSET
         assert inspect.signature(engine_version).return_annotation in ("str", str)
         assert not inspect.iscoroutinefunction(engine_version)

@@ -80,3 +80,9 @@ dmypy.json
 
 # Tooling caches
 .ruff_cache/
+
+CLAUDE.md
+
+llms.txt
+
+tests/parity/

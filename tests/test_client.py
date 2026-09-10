@@ -1962,6 +1962,32 @@ class TestKnowledgeMaps:
         fake.map_create_body = {"kmID": "abc", "id": 1}
         assert client.create_map("Given name", RBLANG).name == "Given name"
 
+    def test_create_map_sends_description_only_when_given(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        client.create_map("New map", RBLANG, "Who speaks what")
+        assert fake.last.json == {
+            "rblang": RBLANG,
+            "name": "New map",
+            "description": "Who speaks what",
+        }
+        client.create_map("New map", RBLANG, description="")
+        assert fake.last.json["description"] == ""  # an explicit empty string is still sent
+        client.create_map("New map", RBLANG)
+        assert "description" not in fake.last.json
+
+    def test_create_map_result_description(self, client: Rainbird, fake: FakeRainbird) -> None:
+        # Falls back to the argument when the response does not echo it ...
+        created = client.create_map("New map", RBLANG, description="Who speaks what")
+        assert created.description == "Who speaks what"
+        assert "description" not in created.raw
+        # ... the response wins when it does ...
+        fake.map_create_body = {"kmID": "abc", "id": 1, "description": "From the server"}
+        assert client.create_map("n", RBLANG, description="mine").description == "From the server"
+        # ... and it is None when neither side has one.
+        fake.map_create_body = {"kmID": "abc", "id": 1}
+        assert client.create_map("n", RBLANG).description is None
+
     def test_create_map_http_200_error_body_raises(
         self, client: Rainbird, fake: FakeRainbird
     ) -> None:
@@ -2198,3 +2224,119 @@ class TestHeaders:
     def test_json_content_type_on_posts(self, session: Session, fake: FakeRainbird) -> None:
         session.query("speaks", subject="Tom")
         assert fake.last.headers["content-type"] == "application/json"
+
+
+# ------------------------------------------------------------ additions from the SDK parity round
+
+
+class TestSiblingParityAdditions:
+    """Features added after porting the Go and JS SDK test suites (see tests/parity/README.md)."""
+
+    def test_inject_fact_source_is_sent_as_metadata(
+        self, session: Session, fake: FakeRainbird
+    ) -> None:
+        session.inject_fact("Tom", "lives in", "Germany", source="user")
+        assert fake.last.json == [
+            {
+                "subject": "Tom",
+                "relationship": "lives in",
+                "object": "Germany",
+                "certainty": 100,
+                "metadata": {"source": "user"},
+            }
+        ]
+        session.inject_fact("Tom", "lives in", "Germany")
+        assert "metadata" not in fake.last.json[0]
+
+    def test_inject_accepts_fact_metadata(self, session: Session, fake: FakeRainbird) -> None:
+        session.inject(
+            [
+                Fact("A", "r", "x", metadata={"source": "system"}),
+                {
+                    "subject": "B",
+                    "relationship": "r",
+                    "object": "y",
+                    "metadata": {"source": "user"},
+                },
+                ("C", "r", "z"),
+            ]
+        )
+        assert [f.get("metadata") for f in fake.last.json] == [
+            {"source": "system"},
+            {"source": "user"},
+            None,
+        ]
+
+    def test_inject_rejects_non_dict_metadata_before_sending(
+        self, session: Session, fake: FakeRainbird
+    ) -> None:
+        with pytest.raises(InvalidFactError, match="metadata must be a dict"):
+            session.inject({"subject": "A", "relationship": "r", "object": "x", "metadata": "user"})
+        assert fake.calls("/inject") == []
+
+    @pytest.mark.parametrize("method", ["query", "respond", "undo", "inject"])
+    def test_per_call_headers_apply_to_that_request_only(
+        self, method: str, session: Session, fake: FakeRainbird
+    ) -> None:
+        headers = {"x-api-source": "natlang"}
+        if method == "query":
+            session.query("speaks", subject="Tom", headers=headers)
+        elif method == "respond":
+            session.respond(
+                {"subject": "Tom", "relationship": "speaks", "object": "German"}, headers=headers
+            )
+        elif method == "undo":
+            session.undo(headers=headers)
+        else:
+            session.inject(("Tom", "lives in", "Germany"), headers=headers)
+        assert fake.last.headers["x-api-source"] == "natlang"
+        assert fake.last.headers["x-api-key"] == API_KEY  # the standard headers are kept
+
+        session.query("speaks", subject="Tom")  # the next request does not inherit them
+        assert "x-api-source" not in fake.last.headers
+
+    def test_per_call_headers_override_default_headers_case_insensitively(
+        self, make_client, fake: FakeRainbird
+    ) -> None:
+        rb = make_client(default_headers={"X-Trace-Id": "from-client"})
+        session = rb.start(KM_ID)
+        session.query("speaks", subject="Tom", headers={"x-trace-id": "from-call"})
+        assert fake.last.headers["x-trace-id"] == "from-call"
+        assert list(fake.last.headers).count("x-trace-id") == 1
+        session.query("speaks", subject="Tom")
+        assert fake.last.headers["x-trace-id"] == "from-client"
+
+    def test_per_call_headers_on_every_inject_batch(
+        self, session: Session, fake: FakeRainbird
+    ) -> None:
+        facts = [(f"P{i}", "lives in", "X") for i in range(5)]
+        session.inject(facts, batch_size=2, headers={"x-batch": "yes"})
+        calls = fake.calls("/inject")
+        assert len(calls) == 3
+        assert all(c.headers["x-batch"] == "yes" for c in calls)
+
+    def test_engine_version_retry_no_retry_makes_one_attempt(self, fake: FakeRainbird) -> None:
+        http = httpx.Client(transport=httpx.MockTransport(fake.handle))
+        fake.fail_next(500, body="Foobarbaz")
+        with pytest.raises(ServerError) as ei:
+            engine_version(BASE_URL, http_client=http, retry=NO_RETRY)
+        assert ei.value.status_code == 500
+        assert len(fake.requests) == 1
+        http.close()
+
+    def test_engine_version_default_policy_still_retries(
+        self, fake: FakeRainbird, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(http_mod.time, "sleep", lambda _s: None)
+        http = httpx.Client(transport=httpx.MockTransport(fake.handle))
+        fake.fail_next(500)
+        assert engine_version(BASE_URL, http_client=http) == "4.89.0"
+        assert len(fake.requests) == 2
+        http.close()
+
+    def test_engine_constants_are_exported(self, make_client, fake: FakeRainbird) -> None:
+        assert rainbird_ai.ENGINE_CORE == "Core"
+        assert rainbird_ai.ENGINE_BETA == "Experimental (Beta)"
+        assert {"ENGINE_CORE", "ENGINE_BETA"} <= set(rainbird_ai.__all__)
+        make_client(engine=rainbird_ai.ENGINE_BETA).version()
+        assert fake.last.headers["x-rainbird-engine"] == "Experimental (Beta)"

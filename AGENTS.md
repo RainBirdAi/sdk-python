@@ -137,7 +137,7 @@ synchronous; `iter_evidence_tree()` returns an `AsyncIterator` (`async for`).
 - `evidence(session_id, fact_id, *, evidence_key=None) -> Evidence` - session-independent evidence lookup.
 - `evidence_url(session_id, fact_id, *, studio_url=None) -> str` - `{studio}/evidence?id={factID}&api={base_url}&sid={sid}` link to the Studio evidence UI.
 - `get_map_source(km_id) -> KnowledgeMapSource` - UNDOCUMENTED `GET /analysis/file/{kmID}` (section 12).
-- `create_map(name, rblang) -> CreateMapResult` - UNDOCUMENTED `POST /maps` (section 12).
+- `create_map(name, rblang, description=None) -> CreateMapResult` - UNDOCUMENTED `POST /maps` (section 12).
 - `close()`; context manager; properties `base_url`, `studio_url`, `http` (the `httpx.Client`), `config`.
 
 ### `Session` (from `rb.start()` / `rb.resume()`)
@@ -349,7 +349,7 @@ retry_post_on_transport_error=False)`, exponential backoff with jitter, honours 
 Not in the OpenAPI spec; supplied by Rainbird maintainers and may change without notice.
 
 - `rb.get_map_source(km_id) -> KnowledgeMapSource` - `GET /analysis/file/{kmID}` with `X-API-Key`; returns `{"concepts": [...], "rels": [...], "rblang": "<?xml ..."}` -> `.rblang`, `.concepts`, `.relationships`.
-- `rb.create_map(name, rblang) -> CreateMapResult` - `POST /maps` with `X-API-Key` and `Version: v1`, body `{"rblang": xml, "name": name}` -> `{"kmID": "...", "id": 123, ...}`. On RBLang parse failure Rainbird replies **HTTP 200 with an `error` key**; the SDK raises `KnowledgeMapError` (`.errors`). Only truthy `err`/`errors`/`error` values are treated as failures (`{"error": false}`, `null`, `""`, `0`, `[]` and `{}` are success); an informational `message` on a success body is ignored. Use `result.km_id` with `rb.start()`.
+- `rb.create_map(name, rblang, description=None) -> CreateMapResult` - `POST /maps` with `X-API-Key` and `Version: v1`, body `{"rblang": xml, "name": name}` plus `"description": description` when given -> `{"kmID": "...", "id": 123, ...}` (`.description` echoes the response's value or your argument). On RBLang parse failure Rainbird replies **HTTP 200 with an `error` key**; the SDK raises `KnowledgeMapError` (`.errors`). Only truthy `err`/`errors`/`error` values are treated as failures (`{"error": false}`, `null`, `""`, `0`, `[]` and `{}` are success); an informational `message` on a success body is ignored. Use `result.km_id` with `rb.start()`.
 
 Minimal RBLang: `<rbl:kb xmlns:rbl="http://rbl.io/schema/RBLang"><concept name="Person" type="string"/><concept name="Language" type="string"/><rel name="speaks" subject="Person" object="Language"/></rbl:kb>`
 (concept types: `string|number|date|truth`; instances via `<concinst>`/`<relinst>`).

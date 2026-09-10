@@ -119,6 +119,8 @@ session.respond({"subject": "Germany", "relationship": "national language", "obj
 ```
 
 `session.pending_question`, `session.result` and `session.last_response` expose the current state.
+`query()`, `respond()`, `undo()` and `inject()` take `headers={...}` for extra HTTP headers on that
+request only; `Rainbird(default_headers=...)` applies to every request.
 
 ## Automating the loop with `session.run()`
 
@@ -151,13 +153,17 @@ with Rainbird() as rb:
 ## Injecting facts
 
 `inject()` accepts a `Fact`, a dict, a `(subject, relationship, object[, certainty])` tuple, or a
-list mixing any of those. Certainty is 0-100 (100 = certain) and defaults to 100.
+list mixing any of those. Certainty is 0-100 (100 = certain) and defaults to 100. A fact may carry
+`metadata`; the API uses `{"source": "system" | "user"}` to record whether it came from another
+system (the default) or from a person, and `inject_fact(..., source="user")` is the shorthand.
 
 ```python
 from rainbird_ai import Fact
 
 session.inject_fact("Tom", "lives in", "Germany")                 # one fact, certainty 100
+session.inject_fact("Tom", "lives in", "Germany", source="user")   # metadata: {"source": "user"}
 session.inject(Fact("Tom", "lives in", "Germany", certainty=90))
+session.inject(Fact("Tom", "works in", "Berlin", metadata={"source": "system"}))
 session.inject({"subject": "Ana", "relationship": "lives in", "object": "France", "certainty": 80})
 session.inject(("Ben", "lives in", "Spain"))
 response = session.inject([Fact("A", "r", "x"), {"subject": "B", "relationship": "r", "object": 1},
@@ -168,8 +174,8 @@ response.ok   # True when the API replied {"result": "OK"}
 Rainbird recommends at most 250 facts per request, so long lists are sent in batches of 250
 automatically (`batch_size=` overrides this) and the last batch's `InjectResponse` is returned.
 Malformed facts are rejected before anything is sent: `InvalidFactError` for a missing or unknown
-key, a certainty outside 0-100 or an empty list; `InvalidAnswerError` for an unsupported object
-value (`None`, a dict, a list, NaN or infinity).
+key, a `metadata` that is not a dict, a certainty outside 0-100 or an empty list;
+`InvalidAnswerError` for an unsupported object value (`None`, a dict, a list, NaN or infinity).
 
 ## Evidence
 
@@ -180,7 +186,8 @@ from the Publish page as `Rainbird(evidence_key=...)`, via `RAINBIRD_EVIDENCE_KE
 fact_id = response.best.fact_id
 
 node = session.evidence(fact_id)                  # one Evidence node
-node.fact, node.source                            # SessionFact; FactSource.RULE / ANSWER / INJECTION / ...
+node.fact, node.source                            # SessionFact (node.fact.source mirrors node.source);
+                                                  #   FactSource.RULE / ANSWER / INJECTION / ...
 if node.is_inferred:
     node.rule.bindings                            # {"S": "Tom", "O": "German", ...}
     for cond in node.rule.conditions:             # Condition (.subject/.relationship/.object/.certainty/
@@ -203,7 +210,7 @@ did not start here use `rb.evidence(session_id, fact_id)` and `rb.evidence_url(s
 ```python
 info = session.knowledge_map()          # KnowledgeMapVersion
 info.id, info.name, info.version_id, info.version_status, info.version_created
-info.is_draft, info.version_number      # "Version3" -> 3, None for drafts
+info.is_draft, info.version_number      # versionNumber from the API, else "Version3" -> 3; None for drafts
 
 facts = session.facts()                 # SessionFacts, grouped by scope
 facts.global_, facts.context, facts.local, facts.all
@@ -294,7 +301,7 @@ Explicit constructor arguments win over environment variables.
 | `base_url`                                        | `RAINBIRD_API_URL`         | `https://api.rainbird.ai`  | an `Environment` member or any host string                       |
 | `evidence_key`                                    | `RAINBIRD_EVIDENCE_KEY`    | `None`                     | `x-evidence-key` for secured evidence                            |
 | `interaction_key`                                 | `RAINBIRD_INTERACTION_KEY` | `None`                     | `x-interaction-key` for secured interaction logs                 |
-| `engine`                                          | `RAINBIRD_ENGINE`          | `None`                     | `x-rainbird-engine`, selects an alternate reasoning engine       |
+| `engine`                                          | `RAINBIRD_ENGINE`          | `None`                     | `x-rainbird-engine`; `ENGINE_CORE` / `ENGINE_BETA` are the known names |
 | `timeout`                                         |                            | `30.0`                     | seconds or an `httpx.Timeout`; `None` disables it; see below     |
 | `retry`                                           |                            | `RetryPolicy()`            | see below; `NO_RETRY` turns retries off                          |
 | `default_headers`                                 |                            | `{}`                       | extra headers merged (case-insensitively) into every request     |
@@ -328,10 +335,11 @@ or `#` (a query string or fragment, even an empty trailing one) raises
 `GET /version` is public, so you can check connectivity or the engine version without a key:
 
 ```python
-from rainbird_ai import async_engine_version, engine_version
+from rainbird_ai import NO_RETRY, async_engine_version, engine_version
 
 engine_version()                                            # "4.89.0"; host from RAINBIRD_API_URL or default
-engine_version("https://acme-api.rainbird.ai", timeout=5)   # engine=, timeout=, http_client= keyword-only
+engine_version("https://acme-api.rainbird.ai", timeout=5)   # engine=, timeout=, http_client=, retry= keyword-only
+engine_version(retry=NO_RETRY)                              # one attempt; the default RetryPolicy retries 5xx
 version = await async_engine_version()                      # inside a coroutine
 rb.version()                                                # same endpoint through a configured client
 ```
@@ -439,9 +447,10 @@ rblang = """<?xml version="1.0" encoding="UTF-8"?>
   <relinst type="speaks" subject="Tom" object="German" cf="100"/>
 </rbl:kb>"""
 
-created = rb.create_map("Languages", rblang)   # POST /maps
+created = rb.create_map("Languages", rblang, description="Who speaks what")   # POST /maps
 created.km_id                                   # GUID to pass to rb.start()
 created.id                                      # Rainbird's numeric id
+created.description                             # optional; sent only when you pass it
 ```
 
 When Rainbird rejects the RBLang it still answers HTTP 200 with an `error` key; the SDK turns that
@@ -469,7 +478,7 @@ rainbird evidence --session SID --fact-id WA:RF:... --tree --url   # nested tree
 rainbird interact "Tom lives in Germany. What does Tom speak?"
 rainbird interactions --session SID --format csv
 rainbird map get KM_ID --out map.rbl                          # undocumented endpoint
-rainbird map create --name "My map" --file map.rbl            # undocumented endpoint
+rainbird map create --name "My map" --file map.rbl [--description "..."]   # undocumented endpoint
 ```
 
 Further commands: `respond`, `undo`, `explain`, `facts`, `session`; run `rainbird COMMAND --help`.
