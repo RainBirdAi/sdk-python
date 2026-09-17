@@ -7,6 +7,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `KnowledgeMapVersion.km_id`, an alias of `.id`, so the knowledge map GUID has the same name
+  on every map model (`CreateMapResult.km_id`, `KnowledgeMapSource.km_id`) and on `Session.km_id`.
+
+### Changed
+
+- Docstrings and README now say that strict option checking only applies when the map sets
+  `canAdd="false"`; RBLang defaults `canAdd` to true, so by default any value is accepted and
+  becomes a new concept instance.
+
+## [0.2.0] - 2026-09-17
+
 Closes the gaps found by porting the Go and JavaScript SDK test suites to this package
 (`tests/parity/`, see its README for the full comparison).
 
@@ -40,7 +53,7 @@ Closes the gaps found by porting the Go and JavaScript SDK test suites to this p
   was), so a `SessionFact` taken from evidence carries the same fields as one from
   `session.facts()`.
 
-## [1.0.0] - 2026-09-03
+## [0.1.0] - 2026-09-03
 
 Complete rewrite of the SDK. The `rainbird_python_sdk` package and its `RainbirdAPIClient`
 class are gone; the new package is `rainbird-ai` on PyPI with import name `rainbird_ai`.
@@ -227,5 +240,6 @@ class are gone; the new package is `rainbird-ai` on PyPI with import name `rainb
 | `ValueError("Session not started. Call start() first.")`     | gone: session methods live on the `Session` returned by `rb.start()` / `rb.resume()` |
 | `except requests.HTTPError` / `except ValueError`            | `except RainbirdAPIError` / `except RainbirdError` (`RainbirdConfigurationError`, `InvalidAnswerError` and `InvalidFactError` still subclass `ValueError`) |
 
-[Unreleased]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/juliodt-ai/rainbird-python-sdk/releases/tag/v1.0.0
+[Unreleased]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/juliodt-ai/rainbird-python-sdk/releases/tag/v0.1.0

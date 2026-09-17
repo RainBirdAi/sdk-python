@@ -250,6 +250,9 @@ def build_answers(
         strict: When ``True`` (default) reject values outside ``question.options`` if
             ``canAdd`` is false, multiple values for non-plural questions, and skips when
             ``allowUnknown`` is false. Set ``False`` to let the API be the judge.
+            Option checking is not a spell-checker: ``canAdd`` defaults to true in RBLang,
+            so unless the map sets ``canAdd="false"`` on the relationship any value is sent
+            and the engine creates a new concept instance for it.
 
     Raises:
         InvalidAnswerError: if the value cannot be mapped onto the question.

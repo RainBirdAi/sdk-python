@@ -704,7 +704,11 @@ class SessionFacts(_RawMixin):
 
 @dataclass(frozen=True)
 class KnowledgeMapVersion(_RawMixin):
-    """Knowledge map + version used by a session (``/analysis/session?filter=version``)."""
+    """Knowledge map + version used by a session (``/analysis/session?filter=version``).
+
+    ``id`` is the knowledge map GUID (the value passed to ``start()``); :attr:`km_id` is the
+    same value under the name the other map models and ``Session`` use.
+    """
 
     id: str | None
     name: str | None
@@ -724,6 +728,12 @@ class KnowledgeMapVersion(_RawMixin):
             version_created=_parse_datetime(_get(km, "versionCreated")),
             raw=data,
         )
+
+    @property
+    def km_id(self) -> str | None:
+        """The knowledge map GUID; an alias of :attr:`id` matching ``CreateMapResult.km_id``,
+        ``KnowledgeMapSource.km_id`` and ``Session.km_id``."""
+        return self.id
 
     @property
     def is_draft(self) -> bool:

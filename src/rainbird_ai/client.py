@@ -373,7 +373,9 @@ class Session:
         - :data:`~rainbird_ai.SKIP` skips the question (needs ``allowUnknown``).
 
         ``strict`` validates the value against the question's options/plurality before
-        sending; set ``False`` to defer all validation to the API.
+        sending; set ``False`` to defer all validation to the API. Options are enforced
+        only when the map sets ``canAdd="false"`` (RBLang defaults it to true), so a
+        misspelt value is otherwise sent and becomes a new concept instance.
         """
         target = question or self.pending_question
         if target is None:

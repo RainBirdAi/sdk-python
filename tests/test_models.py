@@ -1523,6 +1523,7 @@ class TestKnowledgeMapVersion:
     def test_spec_example_is_draft(self) -> None:
         km = KnowledgeMapVersion.from_dict(SPEC_SESSION_VERSION)
         assert km.id == SPEC_KM_VERSION_ID
+        assert km.km_id == SPEC_KM_VERSION_ID
         assert km.name == "Loss Assessment"
         assert km.version_id == SPEC_KM_VERSION_ID
         assert km.version_status == "Draft"
@@ -1534,6 +1535,7 @@ class TestKnowledgeMapVersion:
     def test_fixture_is_version_3(self) -> None:
         km = KnowledgeMapVersion.from_dict(SESSION_VERSION)
         assert km.id == KM_ID
+        assert km.km_id == KM_ID
         assert km.name == "Languages"
         assert km.version_id == KM_VERSION_ID
         assert km.version_status == "Version3"
@@ -1560,6 +1562,11 @@ class TestKnowledgeMapVersion:
         km = KnowledgeMapVersion.from_dict(body)
         assert km.version_number == number
         assert km.is_draft is draft
+
+    def test_km_id_is_none_when_id_missing(self) -> None:
+        km = KnowledgeMapVersion.from_dict({"km": {"versionStatus": "Draft"}})
+        assert km.id is None
+        assert km.km_id is None
 
     def test_unwrapped_km_body(self) -> None:
         km = KnowledgeMapVersion.from_dict(SESSION_VERSION["km"])

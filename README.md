@@ -107,6 +107,11 @@ numeric option, and then the option's own value is what gets sent, since that is
 instance the engine knows. Pass `strict=False` to let the API be the judge. Calling `answer()` with
 no pending question raises `NoPendingQuestionError`.
 
+Option checking is not a spell-checker. `canAdd` defaults to true in RBLang, so unless the map
+author writes `canAdd="false"` on the relationship, `can_add` is true, any value is sent, and the
+engine creates a new concept instance for it. Set `canAdd="false"` in the map when you want
+misspelt answers rejected client-side.
+
 For full control build `Answer` objects (or dicts with the API's field names) and send them with
 `session.respond(answers)`:
 
@@ -209,7 +214,7 @@ did not start here use `rb.evidence(session_id, fact_id)` and `rb.evidence_url(s
 
 ```python
 info = session.knowledge_map()          # KnowledgeMapVersion
-info.id, info.name, info.version_id, info.version_status, info.version_created
+info.km_id, info.name, info.version_id, info.version_status, info.version_created   # km_id == id
 info.is_draft, info.version_number      # versionNumber from the API, else "Version3" -> 3; None for drafts
 
 facts = session.facts()                 # SessionFacts, grouped by scope
