@@ -2331,7 +2331,7 @@ class TestRawAndImmutability:
             CreateMapResult,
         ):
             assert dataclasses.is_dataclass(cls)
-            assert cls.__dataclass_params__.frozen is True, cls  # type: ignore[attr-defined]
+            assert cls.__dataclass_params__.frozen is True, cls  # type: ignore[union-attr]
 
 
 # --------------------------------------------------------------------------- through the client

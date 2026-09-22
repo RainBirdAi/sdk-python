@@ -84,5 +84,3 @@ dmypy.json
 CLAUDE.md
 
 llms.txt
-
-tests/parity/
