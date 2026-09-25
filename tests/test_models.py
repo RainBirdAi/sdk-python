@@ -23,6 +23,8 @@ from rainbird_ai.models import (
     Concept,
     Condition,
     CreateMapResult,
+    Decision,
+    DecisionStatus,
     Environment,
     Evidence,
     ExplainResponse,
@@ -2292,6 +2294,15 @@ class TestRawAndImmutability:
             (ExplainResponse.from_dict(EXPLAIN_OK), "explanation"),
             (KnowledgeMapSource.from_dict(MAP_SOURCE, km_id=KM_ID), "km_id"),
             (CreateMapResult.from_dict({"kmID": "g"}), "km_id"),
+            (
+                Decision.from_response(
+                    ResultResponse.from_dict(RESULT_TOM_SPEAKS_GERMAN),
+                    session_id="s",
+                    relationship="speaks",
+                    subject="Tom",
+                ),
+                "decision",
+            ),
         ],
         ids=lambda v: type(v).__name__ if not isinstance(v, str) else v,
     )
@@ -2329,6 +2340,7 @@ class TestRawAndImmutability:
             ExplainResponse,
             KnowledgeMapSource,
             CreateMapResult,
+            Decision,
         ):
             assert dataclasses.is_dataclass(cls)
             assert cls.__dataclass_params__.frozen is True, cls  # type: ignore[union-attr]
@@ -2774,3 +2786,133 @@ class TestCreateMapResultDescription:
         echoed = {**body, "description": "theirs"}
         assert CreateMapResult.from_dict(echoed, description="mine").description == "theirs"
         assert CreateMapResult.from_dict(echoed).raw is echoed
+
+
+# --------------------------------------------------------------------------- Decision
+
+
+class TestDecision:
+    RESULT = ResultResponse.from_dict(RESULT_TOM_SPEAKS_GERMAN)
+    QUESTION = QuestionResponse.from_dict({"question": QUESTION_SECOND_OBJECT, "sid": "s"})
+    EMPTY = ResultResponse.from_dict({"result": []})
+
+    def build(self, response: Any, **kwargs: Any) -> Decision:
+        kwargs.setdefault("session_id", "sid-1")
+        kwargs.setdefault("relationship", "speaks")
+        return Decision.from_response(response, **kwargs)
+
+    def test_result_object_side(self) -> None:
+        d = self.build(self.RESULT, subject="Tom")
+        assert d.status is DecisionStatus.RESULT
+        assert d.decision == "German"
+        assert d.certainty == 75
+        assert d.fact_id == RESULT_TOM_SPEAKS_GERMAN["result"][0]["factID"]
+        assert d.question is None
+        assert len(d.results) == 1 and isinstance(d.results[0], ResultItem)
+        assert d.best is not None and d.best.object == "German"
+        assert d.response is self.RESULT
+        assert d.raw is RESULT_TOM_SPEAKS_GERMAN
+        assert d.is_final and not d.is_question
+        assert str(d) == "German (75%)"
+
+    def test_result_subject_side(self) -> None:
+        d = self.build(self.RESULT, object="German")
+        assert d.decision == "Tom"
+
+    def test_result_relationship_only_uses_object(self) -> None:
+        d = self.build(self.RESULT)
+        assert d.decision == "German"
+
+    @pytest.mark.parametrize("blank", [None, ""])
+    def test_blank_side_counts_as_not_given(self, blank: Any) -> None:
+        assert self.build(self.RESULT, subject="Tom", object=blank).decision == "German"
+        assert self.build(self.RESULT, subject=blank, object="German").decision == "Tom"
+
+    def test_both_sides_given_is_boolean(self) -> None:
+        assert self.build(self.RESULT, subject="Tom", object="German").decision is True
+        d = self.build(self.EMPTY, subject="Tom", object="German")
+        assert d.status is DecisionStatus.NO_RESULT
+        assert d.decision is False
+
+    def test_no_result(self) -> None:
+        d = self.build(self.EMPTY, subject="Tom")
+        assert d.status is DecisionStatus.NO_RESULT
+        assert d.decision is None and d.certainty is None and d.fact_id is None
+        assert d.results == [] and d.best is None
+        assert d.is_final
+        assert str(d) == "no result"
+
+    def test_question(self) -> None:
+        d = self.build(self.QUESTION, subject="Tom")
+        assert d.status is DecisionStatus.QUESTION
+        assert d.is_question and not d.is_final
+        assert isinstance(d.question, Question)
+        assert d.question.prompt == QUESTION_SECOND_OBJECT["prompt"]
+        assert d.decision is None and d.certainty is None and d.fact_id is None
+        assert d.results == [] and d.best is None
+        assert d.raw is self.QUESTION.raw
+        assert str(d) == f"question: {QUESTION_SECOND_OBJECT['prompt']}"
+
+    def test_best_prefers_highest_certainty(self) -> None:
+        low = dict(RESULT_TOM_SPEAKS_GERMAN["result"][0], object="English", certainty=10)
+        response = ResultResponse.from_dict(
+            {"result": [low, RESULT_TOM_SPEAKS_GERMAN["result"][0]]}
+        )
+        d = self.build(response, subject="Tom")
+        assert d.decision == "German" and d.certainty == 75
+        assert [r.object for r in d.results] == ["English", "German"]
+
+    def test_evidence_and_metadata_are_kept(self) -> None:
+        node = Evidence.from_dict(EVIDENCE_ROOT)
+        d = self.build(
+            self.RESULT,
+            subject="Tom",
+            evidence=[node],
+            evidence_url="https://app.rainbird.ai/evidence?id=x",
+            km_id=KM_ID,
+            km_version_id="v1",
+            session="session-object",
+        )
+        assert d.evidence == [node]
+        assert d.evidence_url == "https://app.rainbird.ai/evidence?id=x"
+        assert d.km_id == KM_ID and d.km_version_id == "v1"
+        assert d.session == "session-object"
+
+    def test_to_dict_flat_shape(self) -> None:
+        node = Evidence.from_dict(EVIDENCE_ROOT)
+        d = self.build(self.RESULT, subject="Tom", evidence=[node], km_id=KM_ID)
+        data = d.to_dict()
+        assert data == {
+            "status": "result",
+            "decision": "German",
+            "certainty": 75,
+            "session_id": "sid-1",
+            "fact_id": RESULT_TOM_SPEAKS_GERMAN["result"][0]["factID"],
+            "km_id": KM_ID,
+            "km_version_id": None,
+            "relationship": "speaks",
+            "subject": "Tom",
+            "object": None,
+            "question": None,
+            "results": [RESULT_TOM_SPEAKS_GERMAN["result"][0]],
+            "evidence": [EVIDENCE_ROOT],
+            "evidence_url": None,
+        }
+        data["results"][0]["object"] = "changed"
+        assert d.results[0].object == "German"  # deep copies
+
+    def test_to_dict_of_question(self) -> None:
+        data = self.build(self.QUESTION, subject="Tom").to_dict()
+        assert data["status"] == "question"
+        assert data["question"] == QUESTION_SECOND_OBJECT
+        assert data["results"] == [] and data["decision"] is None
+
+    def test_session_and_response_are_not_in_repr(self) -> None:
+        text = repr(self.build(self.RESULT, subject="Tom", session=object()))
+        assert "session=" not in text and "response=" not in text and "raw=" not in text
+        assert "decision='German'" in text
+
+    def test_status_enum_is_a_str(self) -> None:
+        assert DecisionStatus.RESULT == "result"
+        assert str(DecisionStatus.NO_RESULT) == "no_result"
+        assert DecisionStatus("question") is DecisionStatus.QUESTION

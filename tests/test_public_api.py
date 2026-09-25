@@ -949,6 +949,7 @@ class TestSyncAsyncParity:
         ("qualname", "kind"),
         [
             ("AsyncRainbird.start", "coroutine"),
+            ("AsyncRainbird.decide", "coroutine"),
             ("AsyncRainbird.version", "coroutine"),
             ("AsyncRainbird.evidence", "coroutine"),
             ("AsyncRainbird.get_map_source", "coroutine"),

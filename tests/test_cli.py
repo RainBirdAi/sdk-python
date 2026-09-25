@@ -165,6 +165,7 @@ class TestParser:
             "start",
             "inject",
             "query",
+            "decide",
             "respond",
             "undo",
             "evidence",
@@ -265,6 +266,7 @@ class TestGlobalOptionPlacement:
         ["start"],
         ["inject", "--session", SID],
         ["query", "-r", "speaks"],
+        ["decide", "-r", "speaks"],
         ["respond", "--session", SID, "[]"],
         ["undo", "--session", SID],
         ["evidence", "--session", SID, "--fact-id", "F"],
@@ -2080,3 +2082,213 @@ class TestErrorsAndAuth:
     def test_success_returns_0_from_main(self, run: Runner) -> None:
         # main() returns rather than raising SystemExit on success
         assert cli.main(["version"]) == 0
+
+
+# --------------------------------------------------------------------------- decide
+
+
+class TestDecide:
+    def test_text_output_for_a_result(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_result(RESULT_ITEM)
+        result = run(
+            "decide",
+            "--km-id",
+            KM_ID,
+            "-r",
+            "speaks",
+            "-s",
+            "Tom",
+            "--fact",
+            "Tom",
+            "lives in",
+            "Germany",
+        )
+        assert result.code == 0, result.err
+        assert result.err == ""
+        sid = next(iter(fake.sessions))
+        lines = result.out.splitlines()
+        assert lines[0] == "status     result"
+        assert lines[1] == "decision   German"
+        assert lines[2] == "certainty  75%"
+        assert lines[3] == f"session    {sid}"
+        assert lines[4] == f"fact_id    {RESULT_FACT_ID}"
+        assert lines[5].startswith("evidence   https://fake.rainbird.ai/evidence?id=")
+        assert len(lines) == 6
+        assert [r.path.rsplit("/", 1)[-1] for r in fake.requests] == [KM_ID, "inject", "query"]
+        assert fake.calls("/inject")[0].json == [
+            {"subject": "Tom", "relationship": "lives in", "object": "Germany", "certainty": 100}
+        ]
+        assert fake.calls("/query")[0].json == {"relationship": "speaks", "subject": "Tom"}
+
+    def test_json_output(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_result(RESULT_ITEM)
+        result = run("--json", "decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom")
+        assert result.code == 0, result.err
+        data = result.json
+        sid = next(iter(fake.sessions))
+        assert data["status"] == "result"
+        assert data["decision"] == "German"
+        assert data["certainty"] == 75
+        assert data["session_id"] == sid
+        assert data["fact_id"] == RESULT_FACT_ID
+        assert data["question"] is None
+        assert data["results"] == [RESULT_ITEM]
+        assert data["evidence"] == []
+        assert data["km_id"] == KM_ID
+
+    def test_question_prints_decision_and_exits_3(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        result = run("decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom")
+        assert result.code == 3
+        sid = next(iter(fake.sessions))
+        assert result.out.splitlines()[:2] == ["status     question", f"session    {sid}"]
+        assert "What is the national language of Germany?" in result.out
+        assert f"rainbird query --session {sid} -r speaks" in result.err
+        assert fake.calls("/response") == []
+
+    def test_question_json_exits_3(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        result = run("decide", "--json", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom")
+        assert result.code == 3
+        data = result.json
+        assert data["status"] == "question"
+        assert data["question"] == QUESTION_SECOND_OBJECT
+        assert data["decision"] is None
+
+    def test_no_result(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_result()
+        result = run("decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom")
+        assert result.code == 0
+        lines = result.out.splitlines()
+        assert lines[0] == "status     no_result"
+        assert lines[1] == "decision   -"
+        assert lines[2] == "certainty  -"
+        assert lines[4] == "fact_id    -"
+        assert not any(line.startswith("evidence") for line in lines)
+
+    def test_both_sides_prints_boolean(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_result(RESULT_ITEM)
+        result = run("decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom", "-o", "German")
+        assert result.code == 0
+        assert "decision   True" in result.out
+        assert fake.calls("/query")[0].json == {
+            "relationship": "speaks",
+            "subject": "Tom",
+            "object": "German",
+        }
+
+    def test_several_results_are_listed(self, run: Runner, fake: FakeRainbird) -> None:
+        low = dict(RESULT_ITEM, object="English", certainty=40, factID="WA:RF:low")
+        fake.queue_result(low, RESULT_ITEM)
+        result = run("decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom")
+        assert result.code == 0
+        assert "decision   German" in result.out
+        assert "results:" in result.out
+        assert "Tom  speaks  English    certainty=40%" in result.out
+        assert "Tom  speaks  German    certainty=75%" in result.out
+
+    def test_evidence_tree(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_result(RESULT_ITEM)
+        result = run("decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom", "--evidence", "tree")
+        assert result.code == 0, result.err
+        assert "evidence tree:" in result.out
+        assert f"Tom speaks German (75%)  [rule]  {ROOT_FACT_ID}" in result.out
+        assert "  Tom lives in Germany (100%)  [injection]" in result.out
+        assert len(fake.calls("/analysis/evidence/")) == 3
+
+    def test_evidence_root_json_and_max_depth(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_result(RESULT_ITEM)
+        result = run(
+            "--json", "decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom", "--evidence", "root"
+        )
+        assert result.code == 0
+        assert result.json["evidence"] == [EVIDENCE_ROOT]
+        fake.queue_result(RESULT_ITEM)
+        result = run(
+            "--json",
+            "decide",
+            "--km-id",
+            KM_ID,
+            "-r",
+            "speaks",
+            "-s",
+            "Tom",
+            "--evidence",
+            "tree",
+            "--max-depth",
+            "0",
+        )
+        assert result.code == 0
+        assert [n["factID"] for n in result.json["evidence"]] == [ROOT_FACT_ID]
+
+    def test_evidence_key_is_forwarded(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.require_evidence_key = "secret"
+        fake.queue_result(RESULT_ITEM)
+        result = run(
+            "decide",
+            "--km-id",
+            KM_ID,
+            "-r",
+            "speaks",
+            "-s",
+            "Tom",
+            "--evidence",
+            "root",
+            "--evidence-key",
+            "secret",
+        )
+        assert result.code == 0, result.err
+        assert fake.last.headers["x-evidence-key"] == "secret"
+
+    def test_missing_evidence_key_exits_1(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.require_evidence_key = "secret"
+        fake.queue_result(RESULT_ITEM)
+        result = run("decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom", "--evidence", "root")
+        assert result.code == 1
+        assert "403" in result.err
+
+    def test_invalid_evidence_choice_is_a_usage_error(
+        self, run: Runner, fake: FakeRainbird
+    ) -> None:
+        result = run("decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom", "--evidence", "all")
+        assert result.code == 2
+        assert fake.requests == []
+
+    def test_relationship_is_required(self, run: Runner) -> None:
+        result = run("decide", "--km-id", KM_ID, "-s", "Tom")
+        assert result.code == 2
+
+    def test_bad_fact_is_a_usage_error_before_any_request(
+        self, run: Runner, fake: FakeRainbird
+    ) -> None:
+        result = run("decide", "--km-id", KM_ID, "-r", "speaks", "--fact", "Tom", "lives in")
+        assert result.code == 2
+        assert fake.requests == []
+
+    def test_start_options_are_forwarded(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_result(RESULT_ITEM)
+        result = run(
+            "decide", "--km-id", KM_ID, "-r", "speaks", "-s", "Tom", "--draft", "--context-id", "c1"
+        )
+        assert result.code == 0
+        sid = next(iter(fake.sessions))
+        assert fake.sessions[sid]["params"] == {"useDraft": "true", "contextid": "c1"}
+
+    def test_km_id_from_environment(
+        self, run: Runner, fake: FakeRainbird, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RAINBIRD_KM_ID", KM_ID)
+        fake.queue_result(RESULT_ITEM)
+        assert run("decide", "-r", "speaks", "-s", "Tom").code == 0
+        assert fake.requests[0].path == f"/start/{KM_ID}"
+
+    def test_missing_km_id_exits_1(self, run: Runner, fake: FakeRainbird) -> None:
+        result = run("decide", "-r", "speaks", "-s", "Tom")
+        assert result.code == 1
+        assert "RAINBIRD_KM_ID" in result.err
+        assert fake.requests == []
+
+    def test_help_mentions_one_shot(self, run: Runner) -> None:
+        result = run("--help")
+        assert result.code == 0
+        assert "decide" in result.out

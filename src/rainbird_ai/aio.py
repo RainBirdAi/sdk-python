@@ -31,11 +31,12 @@ from ._http import (
     RetryPolicy,
     Unset,
 )
-from .client import MAX_INJECT_BATCH
+from .client import MAX_INJECT_BATCH, _check_evidence_mode
 from .errors import NoPendingQuestionError, RainbirdConfigurationError, RainbirdError
 from .models import (
     Answer,
     CreateMapResult,
+    Decision,
     Evidence,
     ExplainResponse,
     InjectResponse,
@@ -152,6 +153,62 @@ class AsyncRainbird:
         if not session_id or not str(session_id).strip():
             raise RainbirdConfigurationError("session_id must not be empty")
         return AsyncSession(self, str(session_id), km_id=km_id)
+
+    async def decide(
+        self,
+        relationship: str,
+        *,
+        km_id: str | None = None,
+        subject: Any = None,
+        object: Any = None,
+        facts: Any = None,
+        answerer: AsyncAnswerer | None = None,
+        max_questions: int = 100,
+        evidence: Literal["none", "root", "tree"] = "none",
+        evidence_depth: int | None = None,
+        evidence_key: str | None = None,
+        use_draft: bool | None = None,
+        version: int | None = None,
+        context_id: str | None = None,
+    ) -> Decision:
+        """Async version of :meth:`rainbird_ai.Rainbird.decide` (``answerer`` may be async)."""
+        _check_evidence_mode(evidence)
+        session = await self.start(
+            km_id, use_draft=use_draft, version=version, context_id=context_id
+        )
+        if facts:
+            await session.inject(facts)
+        if answerer is None:
+            response = await session.query(relationship, subject=subject, object=object)
+        else:
+            response = await session.run(
+                relationship,
+                subject=subject,
+                object=object,
+                answerer=answerer,
+                max_questions=max_questions,
+            )
+        best = response.best if isinstance(response, ResultResponse) else None
+        fact_id = best.fact_id if best is not None else None
+        nodes: list[Evidence] = []
+        if fact_id and evidence == "root":
+            nodes = [await session.evidence(fact_id, evidence_key=evidence_key)]
+        elif fact_id and evidence == "tree":
+            nodes = await session.evidence_tree(
+                fact_id, max_depth=evidence_depth, evidence_key=evidence_key
+            )
+        return Decision.from_response(
+            response,
+            session_id=session.id,
+            relationship=relationship,
+            subject=subject,
+            object=object,
+            evidence=nodes,
+            evidence_url=session.evidence_url(fact_id) if fact_id else None,
+            km_id=session.km_id,
+            km_version_id=session.km_version_id,
+            session=session,
+        )
 
     # -- platform ----------------------------------------------------------------------
 

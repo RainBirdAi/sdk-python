@@ -22,6 +22,8 @@ from rainbird_ai import (
     Answer,
     AuthenticationError,
     BadRequestError,
+    Decision,
+    DecisionStatus,
     Environment,
     Evidence,
     ExplainResponse,
@@ -2340,3 +2342,295 @@ class TestSiblingParityAdditions:
         assert {"ENGINE_CORE", "ENGINE_BETA"} <= set(rainbird_ai.__all__)
         make_client(engine=rainbird_ai.ENGINE_BETA).version()
         assert fake.last.headers["x-rainbird-engine"] == "Experimental (Beta)"
+
+
+# --------------------------------------------------------------------------- decide
+
+
+class TestDecide:
+    """``Rainbird.decide``: start + inject + query in one call, summarised as a ``Decision``."""
+
+    def test_result_from_object_side(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom")
+
+        assert isinstance(decision, Decision)
+        assert decision.status is DecisionStatus.RESULT
+        assert decision.is_final and not decision.is_question
+        assert decision.decision == "German"
+        assert decision.certainty == 75
+        assert decision.fact_id == RESULT_TOM_SPEAKS_GERMAN["result"][0]["factID"]
+        assert decision.question is None
+        assert [item.object for item in decision.results] == ["German"]
+        assert decision.best is not None and decision.best.object == "German"
+        assert decision.evidence == []
+        assert decision.session_id in fake.sessions
+        assert decision.km_id == KM_ID
+        assert decision.km_version_id == KM_VERSION_ID
+        assert decision.relationship == "speaks"
+        assert decision.subject == "Tom" and decision.object is None
+        assert isinstance(decision.response, ResultResponse)
+        assert decision.raw is decision.response.raw
+        assert decision.evidence_url == (
+            f"https://fake.rainbird.ai/evidence?id={decision.fact_id}"
+            f"&api={BASE_URL}&sid={decision.session_id}"
+        )
+        assert str(decision) == "German (75%)"
+        # exactly start + query; no inject without facts, no evidence by default
+        assert [(r.method, r.path.rsplit("/", 1)[-1]) for r in fake.requests] == [
+            ("GET", KM_ID),
+            ("POST", "query"),
+        ]
+        assert fake.calls("/query")[0].json == {"relationship": "speaks", "subject": "Tom"}
+
+    def test_facts_are_injected_before_the_query(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.queue_result(*_result_items())
+        client.decide(
+            "speaks",
+            km_id=KM_ID,
+            subject="Tom",
+            facts=[("Tom", "lives in", "Germany", 90), Fact("Tom", "works in", "Berlin")],
+        )
+        assert [r.path.rsplit("/", 1)[-1] for r in fake.requests] == [KM_ID, "inject", "query"]
+        assert fake.calls("/inject")[0].json == [
+            triple("Tom", "lives in", "Germany", 90),
+            triple("Tom", "works in", "Berlin"),
+        ]
+
+    def test_single_fact_shapes_are_accepted(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(*_result_items())
+        client.decide("speaks", km_id=KM_ID, subject="Tom", facts=("Tom", "lives in", "Germany"))
+        assert fake.calls("/inject")[0].json == [triple("Tom", "lives in", "Germany")]
+
+    @pytest.mark.parametrize("facts", [None, []])
+    def test_no_facts_means_no_inject_request(
+        self, facts: Any, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.queue_result(*_result_items())
+        client.decide("speaks", km_id=KM_ID, subject="Tom", facts=facts)
+        assert fake.calls("/inject") == []
+
+    def test_invalid_fact_raises_before_any_request(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        with pytest.raises(InvalidFactError):
+            client.decide("speaks", km_id=KM_ID, subject="Tom", facts=[("Tom", "lives in")])
+        # the session was started (facts are validated by inject()) but nothing else was sent
+        assert [r.path.rsplit("/", 1)[-1] for r in fake.requests] == [KM_ID]
+
+    def test_question_status(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom")
+
+        assert decision.status is DecisionStatus.QUESTION
+        assert decision.is_question and not decision.is_final
+        assert decision.question is not None
+        assert decision.question.prompt == "What is the national language of Germany?"
+        assert decision.decision is None
+        assert decision.certainty is None
+        assert decision.fact_id is None
+        assert decision.results == []
+        assert decision.best is None
+        assert decision.evidence_url is None
+        assert isinstance(decision.response, QuestionResponse)
+        assert str(decision) == "question: What is the national language of Germany?"
+        assert fake.calls("/response") == []
+
+    def test_question_can_be_continued_on_the_returned_session(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom")
+        session = decision.session
+        assert isinstance(session, Session)
+        assert session.id == decision.session_id
+        assert session.pending_question is decision.question
+        response = session.answer("German")
+        assert isinstance(response, ResultResponse)
+        assert fake.sessions[session.id]["answers"][-1]["answers"][0] == triple(
+            "Germany", "national language", "German"
+        )
+
+    def test_no_result_status(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_result()
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom")
+        assert decision.status is DecisionStatus.NO_RESULT
+        assert decision.is_final
+        assert decision.decision is None
+        assert decision.certainty is None and decision.fact_id is None
+        assert decision.results == [] and decision.best is None
+        assert decision.evidence_url is None
+        assert str(decision) == "no result"
+
+    def test_subject_side_is_the_decision_when_only_object_given(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", km_id=KM_ID, object="German")
+        assert decision.decision == "Tom"
+        assert fake.calls("/query")[0].json == {"relationship": "speaks", "object": "German"}
+
+    def test_both_sides_given_is_a_boolean_check(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.queue_result(*_result_items())
+        yes = client.decide("speaks", km_id=KM_ID, subject="Tom", object="German")
+        assert yes.status is DecisionStatus.RESULT
+        assert yes.decision is True
+        assert yes.certainty == 75
+        fake.queue_result()
+        no = client.decide("speaks", km_id=KM_ID, subject="Tom", object="German")
+        assert no.status is DecisionStatus.NO_RESULT
+        assert no.decision is False
+
+    def test_relationship_only_uses_the_object(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", km_id=KM_ID)
+        assert decision.decision == "German"
+        assert fake.calls("/query")[0].json == {"relationship": "speaks"}
+
+    def test_best_result_wins_when_several_are_returned(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        low = dict(RESULT_TOM_SPEAKS_GERMAN["result"][0], object="English", certainty=40)
+        low["factID"] = "WA:RF:low"
+        fake.queue_result(low, RESULT_TOM_SPEAKS_GERMAN["result"][0])
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom")
+        assert decision.decision == "German"
+        assert decision.certainty == 75
+        assert decision.fact_id == RESULT_TOM_SPEAKS_GERMAN["result"][0]["factID"]
+        assert [item.object for item in decision.results] == ["English", "German"]
+
+    def test_evidence_root_fetches_one_node(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom", evidence="root")
+        assert [node.fact_id for node in decision.evidence] == [EVIDENCE_ROOT["factID"]]
+        assert isinstance(decision.evidence[0], Evidence)
+        assert len(fake.calls("/analysis/evidence/")) == 1
+
+    def test_evidence_tree_fetches_every_node(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom", evidence="tree")
+        assert [node.fact_id for node in decision.evidence] == [
+            EVIDENCE_ROOT["factID"],
+            *EVIDENCE_LEAVES,
+        ]
+        assert len(fake.calls("/analysis/evidence/")) == 3
+
+    def test_evidence_depth_limits_the_tree(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(*_result_items())
+        decision = client.decide(
+            "speaks", km_id=KM_ID, subject="Tom", evidence="tree", evidence_depth=0
+        )
+        assert [node.fact_id for node in decision.evidence] == [EVIDENCE_ROOT["factID"]]
+
+    def test_evidence_key_is_sent(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.require_evidence_key = "secret"
+        fake.queue_result(*_result_items())
+        client.decide("speaks", km_id=KM_ID, subject="Tom", evidence="root", evidence_key="secret")
+        assert fake.last.headers["x-evidence-key"] == "secret"
+
+    def test_missing_evidence_key_propagates_as_permission_denied(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.require_evidence_key = "secret"
+        fake.queue_result(*_result_items())
+        with pytest.raises(PermissionDeniedError):
+            client.decide("speaks", km_id=KM_ID, subject="Tom", evidence="root")
+
+    def test_evidence_is_skipped_without_a_result(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        client.decide("speaks", km_id=KM_ID, subject="Tom", evidence="tree")
+        fake.queue_result()
+        client.decide("speaks", km_id=KM_ID, subject="Tom", evidence="tree")
+        assert fake.calls("/analysis/evidence/") == []
+
+    def test_invalid_evidence_mode_raises_before_any_request(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="evidence must be"):
+            client.decide("speaks", km_id=KM_ID, subject="Tom", evidence="all")  # type: ignore[arg-type]
+        assert fake.requests == []
+
+    def test_answerer_drives_questions_to_a_result(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        fake.queue_question(QUESTION_FIRST_FORM)
+        fake.queue_result(*_result_items())
+        seen: list[str] = []
+
+        def answerer(question: Question) -> Any:
+            seen.append(question.relationship)
+            return {"national language": "German", "speaks": True}[question.relationship]
+
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom", answerer=answerer)
+        assert decision.status is DecisionStatus.RESULT
+        assert decision.decision == "German"
+        assert seen == ["national language", "speaks"]
+        assert len(fake.calls("/response")) == 2
+
+    def test_answerer_max_questions_raises(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        with pytest.raises(RainbirdError, match="more than 1 questions"):
+            client.decide(
+                "speaks", km_id=KM_ID, subject="Tom", answerer=lambda _q: "German", max_questions=1
+            )
+
+    def test_start_options_are_forwarded(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(*_result_items())
+        decision = client.decide(
+            "speaks", km_id=KM_ID, subject="Tom", use_draft=True, context_id="ctx-1"
+        )
+        params = fake.sessions[decision.session_id]["params"]
+        assert params == {"useDraft": "true", "contextid": "ctx-1"}
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom", version=3)
+        assert fake.sessions[decision.session_id]["params"] == {"version": "3"}
+
+    def test_km_id_from_environment(
+        self, client: Rainbird, fake: FakeRainbird, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("RAINBIRD_KM_ID", KM_ID)
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", subject="Tom")
+        assert decision.km_id == KM_ID
+        assert fake.requests[0].path == f"/start/{KM_ID}"
+
+    def test_missing_km_id_raises_before_any_request(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="km_id is required"):
+            client.decide("speaks", subject="Tom")
+        assert fake.requests == []
+
+    def test_api_errors_propagate(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.fail_next(401, {"err": ["Your API key is invalid"]})
+        with pytest.raises(AuthenticationError):
+            client.decide("speaks", km_id=KM_ID, subject="Tom")
+
+    def test_to_dict_is_flat_and_json_serialisable(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        import json
+
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom", evidence="root")
+        data = decision.to_dict()
+        json.dumps(data)
+        assert data["status"] == "result"
+        assert data["decision"] == "German"
+        assert data["certainty"] == 75
+        assert data["session_id"] == decision.session_id
+        assert data["fact_id"] == decision.fact_id
+        assert data["question"] is None
+        assert data["results"] == [RESULT_TOM_SPEAKS_GERMAN["result"][0]]
+        assert data["evidence"] == [EVIDENCE_ROOT]
+        assert data["evidence_url"] == decision.evidence_url
+        assert "session" not in data and "response" not in data

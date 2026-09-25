@@ -38,6 +38,7 @@ from .errors import NoPendingQuestionError, RainbirdConfigurationError, Rainbird
 from .models import (
     Answer,
     CreateMapResult,
+    Decision,
     Evidence,
     ExplainResponse,
     InjectResponse,
@@ -183,6 +184,77 @@ class Rainbird:
         if not session_id or not str(session_id).strip():
             raise RainbirdConfigurationError("session_id must not be empty")
         return Session(self, str(session_id), km_id=km_id)
+
+    def decide(
+        self,
+        relationship: str,
+        *,
+        km_id: str | None = None,
+        subject: Any = None,
+        object: Any = None,
+        facts: Any = None,
+        answerer: Answerer | None = None,
+        max_questions: int = 100,
+        evidence: Literal["none", "root", "tree"] = "none",
+        evidence_depth: int | None = None,
+        evidence_key: str | None = None,
+        use_draft: bool | None = None,
+        version: int | None = None,
+        context_id: str | None = None,
+    ) -> Decision:
+        """Get a decision in one call: start a session, inject ``facts``, query, summarise.
+
+        Runs ``GET /start/{kmID}``, ``POST /{sid}/inject`` (only when ``facts`` is given; any
+        shape :meth:`Session.inject` accepts) and ``POST /{sid}/query`` for ``relationship``
+        with the given ``subject`` and/or ``object``, then returns a flat
+        :class:`~rainbird_ai.Decision`. ``km_id`` falls back to ``RAINBIRD_KM_ID``;
+        ``use_draft``, ``version`` and ``context_id`` are passed to :meth:`start`.
+
+        Without an ``answerer`` the first question the engine asks ends the call with
+        ``status == DecisionStatus.QUESTION``; continue it with ``decision.session.answer(...)``
+        or later via :meth:`resume`. With an ``answerer`` the questions are answered through
+        :meth:`Session.run` (at most ``max_questions``) so the result is always final.
+
+        ``evidence="root"`` also fetches the evidence node of the best result and ``"tree"``
+        its whole evidence tree (``evidence_depth`` limits it); both need the map's evidence
+        key (``evidence_key`` or the client default) and add one request per node.
+        ``Decision.evidence_url`` is always filled when there is a ``fact_id``.
+        """
+        _check_evidence_mode(evidence)
+        session = self.start(km_id, use_draft=use_draft, version=version, context_id=context_id)
+        if facts:
+            session.inject(facts)
+        if answerer is None:
+            response = session.query(relationship, subject=subject, object=object)
+        else:
+            response = session.run(
+                relationship,
+                subject=subject,
+                object=object,
+                answerer=answerer,
+                max_questions=max_questions,
+            )
+        best = response.best if isinstance(response, ResultResponse) else None
+        fact_id = best.fact_id if best is not None else None
+        nodes: list[Evidence] = []
+        if fact_id and evidence == "root":
+            nodes = [session.evidence(fact_id, evidence_key=evidence_key)]
+        elif fact_id and evidence == "tree":
+            nodes = session.evidence_tree(
+                fact_id, max_depth=evidence_depth, evidence_key=evidence_key
+            )
+        return Decision.from_response(
+            response,
+            session_id=session.id,
+            relationship=relationship,
+            subject=subject,
+            object=object,
+            evidence=nodes,
+            evidence_url=session.evidence_url(fact_id) if fact_id else None,
+            km_id=session.km_id,
+            km_version_id=session.km_version_id,
+            session=session,
+        )
 
     # -- platform ----------------------------------------------------------------------
 
@@ -541,6 +613,13 @@ class Session:
             _ops.explain(self.id, fact_id, language=language, instructions=instructions)
         )
         return result
+
+
+def _check_evidence_mode(evidence: str) -> None:
+    if evidence not in ("none", "root", "tree"):
+        raise RainbirdConfigurationError(
+            f"evidence must be 'none', 'root' or 'tree', got {evidence!r}"
+        )
 
 
 def engine_version(

@@ -6,6 +6,7 @@ Examples::
     rainbird version                                            # no API key needed
     rainbird query --relationship speaks --subject Tom          # interactive Q&A
     rainbird query --relationship speaks --subject Tom --answers German --json
+    rainbird decide --relationship speaks --subject Tom --fact Tom "lives in" Germany
     rainbird inject --session SID --fact Tom "lives in" Germany
     rainbird evidence --session SID --fact-id WA:RF:... --tree
     rainbird interact --km-id KM "Can Ben claim?"
@@ -38,6 +39,8 @@ from .client import Rainbird, Session, engine_version
 from .errors import BadRequestError, InvalidAnswerError, InvalidFactError, RainbirdError
 from .models import (
     Condition,
+    Decision,
+    DecisionStatus,
     Environment,
     Evidence,
     QueryResponse,
@@ -342,6 +345,60 @@ def cmd_query(args: argparse.Namespace) -> None:
         _print_results(response)
 
 
+def _print_decision(decision: Decision) -> None:
+    rows: list[tuple[str, Any]] = [("status", decision.status.value)]
+    if decision.status is DecisionStatus.QUESTION:
+        rows.append(("session", decision.session_id))
+    else:
+        cert = f"{decision.certainty}%" if decision.certainty is not None else "-"
+        rows += [
+            ("decision", decision.decision if decision.decision is not None else "-"),
+            ("certainty", cert),
+            ("session", decision.session_id),
+            ("fact_id", decision.fact_id or "-"),
+        ]
+        if decision.evidence_url:
+            rows.append(("evidence", decision.evidence_url))
+    for label, value in rows:
+        print(f"{label:<10} {value}")
+    if decision.question is not None:
+        _print_question(decision.question)
+    if len(decision.results) > 1 and isinstance(decision.response, ResultResponse):
+        print("results:")
+        _print_results(decision.response)
+    if decision.evidence:
+        print("evidence tree:")
+        _print_evidence_tree(decision.evidence)
+
+
+def cmd_decide(args: argparse.Namespace) -> None:
+    facts = _load_facts(args)  # validate local input before touching the network
+    with _client(args) as rb:
+        decision = rb.decide(
+            args.relationship,
+            km_id=args.km_id,
+            subject=args.subject,
+            object=args.object,
+            facts=facts or None,
+            evidence=args.evidence,
+            evidence_depth=args.max_depth,
+            use_draft=args.draft or None,
+            version=args.version,
+            context_id=args.context_id,
+        )
+    if args.json:
+        _emit_json(decision.to_dict())
+    else:
+        _print_decision(decision)
+    if decision.status is DecisionStatus.QUESTION:
+        print(
+            f"rainbird: session {decision.session_id} is waiting for an answer; continue with "
+            f"rainbird query --session {decision.session_id} -r {args.relationship} ...",
+            file=sys.stderr,
+        )
+        raise SystemExit(EXIT_PENDING)
+
+
 def cmd_respond(args: argparse.Namespace) -> None:
     try:
         answers = json.loads(args.answers_json)
@@ -632,6 +689,22 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one statement 
     )
     p.add_argument("--no-strict", action="store_true", help="skip client-side answer validation")
     p.set_defaults(func=cmd_query)
+
+    p = command("decide", "one-shot decision: start, inject facts, query, summarise")
+    p.add_argument("--relationship", "-r", required=True)
+    p.add_argument("--subject", "-s")
+    p.add_argument("--object", "-o")
+    add_km(p)
+    p.add_argument("--context-id", help="share context-scoped facts between sessions")
+    add_facts(p)
+    p.add_argument(
+        "--evidence",
+        choices=["none", "root", "tree"],
+        default="none",
+        help="also fetch the best result's evidence node or whole tree (needs the evidence key)",
+    )
+    p.add_argument("--max-depth", type=int, help="depth limit for --evidence tree")
+    p.set_defaults(func=cmd_decide)
 
     p = command("respond", "send raw answers JSON to a session")
     p.add_argument("--session", required=True)

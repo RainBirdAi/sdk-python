@@ -27,6 +27,8 @@ from rainbird_ai import (
     AuthenticationError,
     BadRequestError,
     CreateMapResult,
+    Decision,
+    DecisionStatus,
     Evidence,
     ExplainResponse,
     Fact,
@@ -2281,6 +2283,7 @@ class TestSyncAsyncParity:
         assert set(CLIENT_FUNCTIONS) >= {
             "__init__",
             "create_map",
+            "decide",
             "evidence",
             "evidence_url",
             "get_map_source",
@@ -2433,3 +2436,82 @@ class TestSiblingParityAdditionsAsync:
             fake.fail_next(500)
             assert await async_engine_version(BASE_URL, http_client=http) == "4.89.0"
             assert len(fake.requests) == 2
+
+
+# --------------------------------------------------------------------------- decide
+
+
+class TestDecideAsync:
+    """``AsyncRainbird.decide``: the awaitable twin of ``Rainbird.decide``."""
+
+    async def test_result(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(RESULT_TOM_SPEAKS_GERMAN["result"][0])
+        decision = await rb.decide(
+            "speaks", km_id=KM_ID, subject="Tom", facts=[("Tom", "lives in", "Germany")]
+        )
+        assert isinstance(decision, Decision)
+        assert decision.status is DecisionStatus.RESULT
+        assert decision.decision == "German"
+        assert decision.certainty == 75
+        assert decision.fact_id == ROOT_FACT
+        assert decision.km_version_id == KM_VERSION_ID
+        assert isinstance(decision.session, AsyncSession)
+        assert decision.session.id == decision.session_id
+        assert [r.path.rsplit("/", 1)[-1] for r in fake.requests] == [KM_ID, "inject", "query"]
+        assert decision.evidence_url == (
+            f"{STUDIO_URL}/evidence?id={ROOT_FACT}&api={BASE_URL}&sid={decision.session_id}"
+        )
+
+    async def test_question_and_continue(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        fake.queue_result(RESULT_TOM_SPEAKS_GERMAN["result"][0])
+        decision = await rb.decide("speaks", km_id=KM_ID, subject="Tom")
+        assert decision.status is DecisionStatus.QUESTION
+        assert decision.question is not None and decision.question.asks_for_object
+        assert decision.decision is None
+        response = await decision.session.answer("German")
+        assert isinstance(response, ResultResponse)
+
+    async def test_no_result(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        fake.queue_result()
+        decision = await rb.decide("speaks", km_id=KM_ID, subject="Tom", object="German")
+        assert decision.status is DecisionStatus.NO_RESULT
+        assert decision.decision is False
+
+    async def test_evidence_tree(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(RESULT_TOM_SPEAKS_GERMAN["result"][0])
+        decision = await rb.decide("speaks", km_id=KM_ID, subject="Tom", evidence="tree")
+        assert [n.fact_id for n in decision.evidence] == [ROOT_FACT, IF_FACT, AF_FACT]
+        assert len(evidence_calls(fake)) == 3
+
+    async def test_evidence_root_with_key(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        fake.require_evidence_key = "secret"
+        fake.queue_result(RESULT_TOM_SPEAKS_GERMAN["result"][0])
+        decision = await rb.decide(
+            "speaks", km_id=KM_ID, subject="Tom", evidence="root", evidence_key="secret"
+        )
+        assert [n.fact_id for n in decision.evidence] == [ROOT_FACT]
+        assert fake.last.headers["x-evidence-key"] == "secret"
+
+    async def test_invalid_evidence_mode(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="evidence must be"):
+            await rb.decide("speaks", km_id=KM_ID, subject="Tom", evidence="x")  # type: ignore[arg-type]
+        assert fake.requests == []
+
+    async def test_async_answerer(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        fake.queue_question(QUESTION_FIRST_FORM)
+        fake.queue_result(RESULT_TOM_SPEAKS_GERMAN["result"][0])
+
+        async def answerer(question: Question) -> Any:
+            await anyio.sleep(0)
+            return "German" if question.asks_for_object else False
+
+        decision = await rb.decide("speaks", km_id=KM_ID, subject="Tom", answerer=answerer)
+        assert decision.status is DecisionStatus.RESULT
+        assert [c.json["answers"][0].get("answer") for c in fake.calls("/response")] == [None, "no"]
+
+    async def test_start_options_forwarded(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        fake.queue_result(RESULT_TOM_SPEAKS_GERMAN["result"][0])
+        decision = await rb.decide("speaks", km_id=KM_ID, subject="Tom", version=2, context_id="c")
+        assert fake.sessions[decision.session_id]["params"] == {"version": "2", "contextid": "c"}

@@ -155,6 +155,39 @@ with Rainbird() as rb:
 
 `run()` raises `RainbirdError` once more than `max_questions` (default 100) questions have been asked.
 
+## One call: `rb.decide()`
+
+`decide()` does the whole start / inject / query round trip in one call and returns a flat
+`Decision`, which is what scripts, connectors and LLM tools usually want:
+
+```python
+with Rainbird() as rb:
+    d = rb.decide("speaks", km_id="YOUR_KM_ID", subject="Tom",
+                  facts=[("Tom", "lives in", "Germany", 90)], evidence="root")
+
+d.status          # DecisionStatus.RESULT | NO_RESULT | QUESTION
+d.decision        # "German": the unknown side of the triple (object here); True/False when both were given
+d.certainty       # 75
+d.session_id      # the session it created
+d.fact_id         # fact ID of the best result, for evidence()/explain()
+d.results         # every ResultItem, not just the best
+d.evidence        # [Evidence] root node (evidence="root") or whole tree (evidence="tree"); [] by default
+d.evidence_url    # Studio link for fact_id (no request needed)
+d.question        # the Question when status is QUESTION, else None
+d.to_dict()       # flat JSON-serialisable dict of all of the above
+```
+
+Facts are injected only when given (any shape `inject()` accepts). Without an `answerer` the
+first question ends the call with `status == DecisionStatus.QUESTION`; `d.session` is the
+`Session` with that question pending, so `d.session.answer("German")` continues it (or resume
+later with `rb.resume(d.session_id)`). Pass `answerer=` to have questions answered through
+`session.run()` (`max_questions` applies), which makes the decision always final. An empty
+result is `NO_RESULT` (`decision` is `None`, or `False` for a subject + object check), not an
+error; API and network failures raise as usual. Evidence fetching is off by default because it
+costs one request per node and needs the map's evidence key (`evidence_key=` or
+`RAINBIRD_EVIDENCE_KEY`). `use_draft`, `version` and `context_id` are forwarded to `start()`.
+The async twin is `await AsyncRainbird.decide(...)`, and the CLI has `rainbird decide`.
+
 ## Injecting facts
 
 `inject()` accepts a `Fact`, a dict, a `(subject, relationship, object[, certainty])` tuple, or a
@@ -478,6 +511,7 @@ rainbird start --draft                                        # start a session,
 rainbird query -r speaks -s Tom                               # interactive question loop
 rainbird query -r speaks -s Tom --fact Tom "lives in" Germany --answers German --json
 rainbird query -r speaks -s Tom --answers "?" "theft,water damage" German@80 --no-input
+rainbird decide -r speaks -s Tom --fact Tom "lives in" Germany --evidence root --json   # one-shot Decision
 rainbird inject --session SID --fact Tom "lives in" Germany --fact Ana "lives in" France 80
 rainbird evidence --session SID --fact-id WA:RF:... --tree --url   # nested tree + Studio link
 rainbird interact "Tom lives in Germany. What does Tom speak?"
@@ -487,6 +521,10 @@ rainbird map create --name "My map" --file map.rbl [--description "..."]   # und
 ```
 
 Further commands: `respond`, `undo`, `explain`, `facts`, `session`; run `rainbird COMMAND --help`.
+`decide` runs start / inject / query once and prints the `Decision` summary (`status`, `decision`,
+`certainty`, `session`, `fact_id`, `evidence` URL; every result when there are several; the
+evidence tree with `--evidence root|tree [--max-depth N]`), or `Decision.to_dict()` with `--json`.
+It never prompts: a question is printed with status `question` and the command exits 3.
 In `--answers` (and at the interactive prompt), `?` skips a question, `a,b` answers a plural
 question and `value@80` sets the certainty; an `@` only counts as the certainty separator when a
 number follows, so `tom@example.com` is a plain value, while a numeric suffix outside 0-100

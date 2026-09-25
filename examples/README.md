@@ -1,7 +1,7 @@
 # Examples
 
 Runnable scripts for the `rainbird_ai` SDK. Each one reads its configuration from the
-environment. The query scripts (`basic_query.py`, `automated_answerer.py`, `evidence_tree.py`,
+environment. The query scripts (`basic_query.py`, `automated_answerer.py`, `decide.py`, `evidence_tree.py`,
 `inject_and_query.py`) take the relationship and subject to query as optional arguments
 (defaults `speaks` / `Tom`; use values from your own knowledge map); `async_query.py` takes a
 relationship followed by any number of subjects (defaults `speaks Tom Ana`);
@@ -22,6 +22,7 @@ python examples/create_map_from_rblang.py "My map"
 | Script | Shows |
 | --- | --- |
 | `basic_query.py` | Key-less `engine_version()` (`GET /version` needs no API key), then the sync query loop: print each question and its options, answer from `input()`. |
+| `decide.py` | One-shot `rb.decide()`: inject facts, query, print the flat `Decision` (`status`, `decision`, `certainty`, `session_id`, `fact_id`, `evidence_url`) and continue on `decision.session` if the engine asks a question. |
 | `automated_answerer.py` | `session.run()` with an answerer that picks from `question.options`, returns `SKIP` when allowed and `True` for yes/no questions; marks where an LLM call would go. |
 | `async_query.py` | `AsyncRainbird` under `asyncio.run()`: a manual awaited loop, then several sessions in parallel with `asyncio.gather`. |
 | `evidence_tree.py` | Query, then `session.evidence_tree()` for the best result printed as a nested tree in the layout of `rainbird evidence --tree` (fetched conditions become child nodes, the rest `- ...` lines) plus the Studio `evidence_url()`. |

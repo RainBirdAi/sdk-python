@@ -9,6 +9,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `Rainbird.decide()` / `AsyncRainbird.decide()`: a one-shot decision (start a session, inject
+  optional facts, query, optionally answer through an `answerer` and fetch evidence) returning
+  the new flat `Decision` model (`status: DecisionStatus`, `decision`, `certainty`, `session_id`,
+  `fact_id`, `question`, `results`, `evidence`, `evidence_url`, plus `response`, `raw` and the
+  `session` used; `to_dict()` gives a JSON-serialisable summary). `DecisionStatus` is `RESULT`,
+  `NO_RESULT` or `QUESTION`. The CLI gains `rainbird decide` (exit 3 when a question is pending).
 - `KnowledgeMapVersion.km_id`, an alias of `.id`, so the knowledge map GUID has the same name
   on every map model (`CreateMapResult.km_id`, `KnowledgeMapSource.km_id`) and on `Session.km_id`.
 

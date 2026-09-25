@@ -30,6 +30,8 @@ __all__ = [
     "Concept",
     "Condition",
     "CreateMapResult",
+    "Decision",
+    "DecisionStatus",
     "Environment",
     "Evidence",
     "ExplainResponse",
@@ -1178,3 +1180,163 @@ class CreateMapResult(_RawMixin):
             description=_get(data, "description", default=description),
             raw=data,
         )
+
+
+# --------------------------------------------------------------------------- one-shot decisions
+
+
+class DecisionStatus(str, enum.Enum):
+    """Outcome of :meth:`rainbird_ai.Rainbird.decide`.
+
+    ``RESULT``: the engine reached at least one result. ``NO_RESULT``: the engine finished
+    but could not infer anything (``results`` is empty). ``QUESTION``: the engine needs more
+    information; ``Decision.question`` holds what it asked and the session is waiting.
+    """
+
+    RESULT = "result"
+    NO_RESULT = "no_result"
+    QUESTION = "question"
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+
+@dataclass(frozen=True)
+class Decision:
+    """Flat summary of a one-shot decision (:meth:`rainbird_ai.Rainbird.decide`).
+
+    ``decision`` is the side of the query triple that was unknown: the best result's
+    ``object`` when the query gave no object, its ``subject`` when only the object was given,
+    and ``True``/``False`` (the triple holds / could not be confirmed) when both sides were
+    given. ``certainty`` and ``fact_id`` come from the same best result (highest certainty);
+    ``results`` lists every result. On ``QUESTION`` status, ``question`` is set and
+    ``decision``, ``certainty`` and ``fact_id`` are ``None``.
+
+    ``response`` is the underlying :class:`QuestionResponse` / :class:`ResultResponse` and
+    ``raw`` its JSON, so nothing the API returned is lost. ``session`` is the
+    :class:`~rainbird_ai.Session` (or ``AsyncSession``) used, with the pending question already
+    tracked, so ``decision.session.answer(value)`` continues a ``QUESTION`` decision.
+    ``evidence`` is filled only when evidence was requested; ``evidence_url`` is the Studio
+    link for ``fact_id`` and costs no request.
+    """
+
+    status: DecisionStatus
+    session_id: str
+    relationship: str
+    subject: Any = None
+    object: Any = None
+    decision: Any = None
+    certainty: int | float | None = None
+    fact_id: str | None = None
+    question: Question | None = None
+    results: list[ResultItem] = field(default_factory=list)
+    evidence: list[Evidence] = field(default_factory=list)
+    evidence_url: str | None = None
+    km_id: str | None = None
+    km_version_id: str | None = None
+    response: QueryResponse | None = field(default=None, repr=False)
+    session: Any = field(default=None, repr=False, compare=False)
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_response(
+        cls,
+        response: QueryResponse,
+        *,
+        session_id: str,
+        relationship: str,
+        subject: Any = None,
+        object: Any = None,
+        evidence: list[Evidence] | None = None,
+        evidence_url: str | None = None,
+        km_id: str | None = None,
+        km_version_id: str | None = None,
+        session: Any = None,
+    ) -> Decision:
+        """Build a :class:`Decision` from a decisions-endpoint response and the query asked."""
+        common: dict[str, Any] = {
+            "session_id": session_id,
+            "relationship": relationship,
+            "subject": subject,
+            "object": object,
+            "evidence": list(evidence or []),
+            "evidence_url": evidence_url,
+            "km_id": km_id,
+            "km_version_id": km_version_id,
+            "response": response,
+            "session": session,
+            "raw": response.raw,
+        }
+        if isinstance(response, QuestionResponse):
+            return cls(status=DecisionStatus.QUESTION, question=response.question, **common)
+        best = response.best
+        both_given = _given(subject) and _given(object)
+        if best is None:
+            return cls(
+                status=DecisionStatus.NO_RESULT,
+                decision=False if both_given else None,
+                **common,
+            )
+        if both_given:
+            value: Any = True
+        elif _given(object) and not _given(subject):
+            value = best.subject
+        else:
+            value = best.object
+        return cls(
+            status=DecisionStatus.RESULT,
+            decision=value,
+            certainty=best.certainty,
+            fact_id=best.fact_id,
+            results=list(response.results),
+            **common,
+        )
+
+    @property
+    def best(self) -> ResultItem | None:
+        """The highest-certainty result, or ``None`` unless ``status`` is ``RESULT``."""
+        if isinstance(self.response, ResultResponse):
+            return self.response.best
+        return None
+
+    @property
+    def is_question(self) -> bool:
+        """``True`` when the engine asked a question instead of deciding."""
+        return self.status is DecisionStatus.QUESTION
+
+    @property
+    def is_final(self) -> bool:
+        """``True`` when the engine finished (``RESULT`` or ``NO_RESULT``)."""
+        return self.status is not DecisionStatus.QUESTION
+
+    def to_dict(self) -> JSON:
+        """JSON-serialisable flat view: summary fields plus raw question, results and evidence."""
+        return {
+            "status": self.status.value,
+            "decision": copy.deepcopy(self.decision),
+            "certainty": self.certainty,
+            "session_id": self.session_id,
+            "fact_id": self.fact_id,
+            "km_id": self.km_id,
+            "km_version_id": self.km_version_id,
+            "relationship": self.relationship,
+            "subject": copy.deepcopy(self.subject),
+            "object": copy.deepcopy(self.object),
+            "question": self.question.to_dict() if self.question is not None else None,
+            "results": [item.to_dict() for item in self.results],
+            "evidence": [node.to_dict() for node in self.evidence],
+            "evidence_url": self.evidence_url,
+        }
+
+    def __str__(self) -> str:
+        if self.status is DecisionStatus.QUESTION and self.question is not None:
+            return f"question: {self.question.prompt}"
+        if self.status is DecisionStatus.NO_RESULT:
+            return "no result"
+        cert = f" ({self.certainty}%)" if self.certainty is not None else ""
+        return f"{self.decision}{cert}"
+
+
+def _given(value: Any) -> bool:
+    """Whether one side of a query triple was supplied (``None``/``""`` mean unknown)."""
+    return value is not None and value != ""

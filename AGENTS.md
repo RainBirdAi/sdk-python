@@ -34,7 +34,7 @@ from rainbird_ai.aio import AsyncRainbird                             # async
 from rainbird_ai import engine_version, async_engine_version, UNSET   # keyless version check, timeout sentinel
 ```
 
-Console script: `rainbird --help` (`rainbird query -r speaks -s Tom --answers German --json`).
+Console script: `rainbird --help` (`rainbird query -r speaks -s Tom --answers German --json`; `rainbird decide -r speaks -s Tom --json` for a one-shot `Decision`, exit 3 if a question is pending).
 CLI notes for scripting:
 
 - Global options `--api-key --base-url --engine --evidence-key --interaction-key --timeout --json`
@@ -133,6 +133,7 @@ synchronous; `iter_evidence_tree()` returns an `AsyncIterator` (`async for`).
 
 - `start(km_id=None, *, use_draft=None, version=None, context_id=None) -> Session` - `GET /start/{kmID}`. Live version by default (draft if nothing is live). `use_draft=True` or `version=N` (positive int), never both (`RainbirdConfigurationError`). `context_id` shares context-scoped facts between sessions.
 - `resume(session_id, *, km_id=None) -> Session` - attach to an existing session id; no request; `pending` is `None` until you query.
+- `decide(relationship, *, km_id=None, subject=None, object=None, facts=None, answerer=None, max_questions=100, evidence="none", evidence_depth=None, evidence_key=None, use_draft=None, version=None, context_id=None) -> Decision` - one-shot: `start()` (+ `inject(facts)` when given) + `query()`; with `answerer` the questions are answered via `run()`. `evidence="root"|"tree"` also fetches the best result's evidence (needs the evidence key; one request per node). Never raises for a question or an empty result: read `Decision.status` (section 9b).
 - `version() -> str` - `GET /version`, engine semver such as `"4.89.0"`. Needs a configured client (so an API key); the endpoint itself is public, use module-level `engine_version()` when you have no key.
 - `evidence(session_id, fact_id, *, evidence_key=None) -> Evidence` - session-independent evidence lookup.
 - `evidence_url(session_id, fact_id, *, studio_url=None) -> str` - `{studio}/evidence?id={factID}&api={base_url}&sid={sid}` link to the Studio evidence UI.
@@ -196,6 +197,7 @@ Decisions:
 - `QuestionResponse(question, extra_questions, sid)`; `is_question: Literal[True]`, `is_result: Literal[False]` (runtime `True`/`False`), `questions` (main + extra), `results == []`.
 - `ResultItem(subject, relationship, object, certainty, fact_id, relationship_type, subject_metadata, object_metadata)`; also parses the capitalised keys returned by `/nl/interact`.
 - `ResultResponse(results: list[ResultItem], sid)`; `is_question: Literal[False]`, `is_result: Literal[True]`, `question is None`, `best` (max certainty or `None`), `fact_ids`, `len()`, iterating yields `ResultItem`.
+- `Decision(status: DecisionStatus, session_id, relationship, subject, object, decision, certainty, fact_id, question: Question | None, results: list[ResultItem], evidence: list[Evidence], evidence_url, km_id, km_version_id, response: QueryResponse | None, session)`; properties `best`, `is_question`, `is_final`; `to_dict()` is a flat JSON-serialisable summary (no `session`/`response`); `raw` is the underlying response JSON. `DecisionStatus`: `RESULT`, `NO_RESULT`, `QUESTION` (str enum, values `"result"`, `"no_result"`, `"question"`).
 - `QueryResponse = QuestionResponse | ResultResponse` (a type alias, not a class). Because `is_question`/`is_result` are `Literal`-typed, `if response.is_question:` (or `while response.is_question:`) narrows the union to `QuestionResponse` under mypy and the `else` branch to `ResultResponse`, exactly like `isinstance`; `if response.is_result:` narrows the other way.
 
 Evidence and analysis:
@@ -286,6 +288,29 @@ list of `Answer` (sent verbatim via `respond()`). Returning a value for a questi
 not fit raises `InvalidAnswerError` from inside `run()`. `AsyncSession.run` accepts a sync or
 `async def` answerer. The loop stops with `RainbirdError` after `max_questions` (default 100).
 `run()` never returns a `QuestionResponse`.
+
+## 9b. One-shot decisions with `rb.decide(...)`
+
+```python
+d = rb.decide("speaks", km_id="<km>", subject="Tom", facts=[("Tom", "lives in", "Germany")])
+if d.status is DecisionStatus.RESULT:
+    d.decision, d.certainty, d.fact_id, d.results, d.evidence_url
+elif d.status is DecisionStatus.QUESTION:
+    d.question.prompt                          # engine needs more; d.session has it pending
+    response = d.session.answer("German")      # or later: rb.resume(d.session_id).answer(v, question=d.question)
+else:                                          # DecisionStatus.NO_RESULT
+    ...                                        # nothing could be inferred (not an error)
+```
+
+`decision` is the unknown side of the triple: the best result's `object` when no object was
+given (including relationship-only queries), its `subject` when only the object was given, and
+`True`/`False` when both were given (`False` on `NO_RESULT`). `certainty`/`fact_id` come from the
+same best (highest-certainty) result; `results` has them all. Pass `answerer=` (same contract
+as section 9) to make the status always final. `evidence="root"` / `"tree"` fill `d.evidence`
+(`evidence_depth` limits the tree) and need the evidence key; `d.evidence_url` is always set
+when there is a `fact_id`. Errors (401, 404, network, invalid facts, bad `evidence` value ->
+`RainbirdConfigurationError`) raise as usual. CLI: `rainbird decide -r speaks -s Tom [--fact ...]
+[--evidence root|tree] [--json]`, exit 3 when the status is `question`.
 
 ## 10. Reading results, evidence and explanations
 
