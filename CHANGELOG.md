@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-05
+
 ### Added
 
 - `Rainbird.decide()` / `AsyncRainbird.decide()`: a one-shot decision (start a session, inject
@@ -23,6 +25,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Docstrings and README now say that strict option checking only applies when the map sets
   `canAdd="false"`; RBLang defaults `canAdd` to true, so by default any value is accepted and
   becomes a new concept instance.
+- The package now declares `Development Status :: 3 - Alpha` (it said Beta) and the README
+  states the pre-1.0 stability policy: the public API may change between `0.x` minor versions.
 
 ## [0.2.0] - 2026-09-17
 
@@ -246,6 +250,7 @@ class are gone; the new package is `rainbird-ai` on PyPI with import name `rainb
 | `ValueError("Session not started. Call start() first.")`     | gone: session methods live on the `Session` returned by `rb.start()` / `rb.resume()` |
 | `except requests.HTTPError` / `except ValueError`            | `except RainbirdAPIError` / `except RainbirdError` (`RainbirdConfigurationError`, `InvalidAnswerError` and `InvalidFactError` still subclass `ValueError`) |
 
-[Unreleased]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/juliodt-ai/rainbird-python-sdk/releases/tag/v0.1.0
