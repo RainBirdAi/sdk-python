@@ -769,9 +769,9 @@ class TestPackaging:
         assert dist.metadata["Name"] == "rainbird-ai"
         assert dist.version == __version__
 
-    def test_requires_python_is_3_10_or_newer(self) -> None:
+    def test_requires_python_is_3_11_or_newer(self) -> None:
         dist = importlib.metadata.distribution("rainbird-ai")
-        assert dist.metadata["Requires-Python"] == ">=3.10"
+        assert dist.metadata["Requires-Python"] == ">=3.11"
 
     def test_httpx_and_anyio_are_the_only_runtime_dependencies(self) -> None:
         dist = importlib.metadata.distribution("rainbird-ai")

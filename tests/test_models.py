@@ -75,7 +75,7 @@ from tests.conftest import (
     FakeRainbird,
 )
 
-UTC = dt.timezone.utc
+UTC = dt.UTC
 
 # --------------------------------------------------------------------------- spec examples
 # Transcribed verbatim from the ``example:`` blocks in /tmp/rainbird_openapi.yaml.

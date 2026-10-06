@@ -483,7 +483,7 @@ class TestParseRetryAfter:
         assert parse_retry_after(_response(429, headers={"retry-after": "7"})) == 7.0
 
     def test_http_date_in_future(self) -> None:
-        when = dt.datetime.now(tz=dt.timezone.utc) + dt.timedelta(seconds=60)
+        when = dt.datetime.now(tz=dt.UTC) + dt.timedelta(seconds=60)
         header = format_datetime(when, usegmt=True)
         value = parse_retry_after(_response(503, headers={"Retry-After": header}))
         assert value is not None

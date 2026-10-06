@@ -80,7 +80,7 @@ from tests.conftest import (
 
 ROOT_FACT_ID: str = EVIDENCE_ROOT["factID"]
 LEAF_IF_ID, LEAF_AF_ID = list(EVIDENCE_LEAVES)
-UTC = dt.timezone.utc
+UTC = dt.UTC
 
 # --------------------------------------------------------------------------- local helpers
 

@@ -66,7 +66,7 @@ Differences found (Python behaviour is asserted; JS behaviour is noted inline):
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 import pytest
@@ -250,8 +250,8 @@ def test_should_perform_simple_get_for_interaction_log_parses_events() -> None:
     assert isinstance(events, list) and len(events) == 2
     assert all(isinstance(event, InteractionEvent) for event in events)
     assert [event.event for event in events] == ["start", "query"]
-    assert events[0].created == datetime(2022, 4, 20, 13, 13, 31, tzinfo=timezone.utc)
-    assert events[1].created == datetime(2022, 4, 20, 13, 13, 44, 532000, tzinfo=timezone.utc)
+    assert events[0].created == datetime(2022, 4, 20, 13, 13, 31, tzinfo=UTC)
+    assert events[1].created == datetime(2022, 4, 20, 13, 13, 44, 532000, tzinfo=UTC)
     assert events[0].values["start"]["sessionID"] == SESSION_ID
     assert events[1].values == {"query": {"subject": "Tom", "relationship": "speaks"}}
     assert [event.to_dict() for event in events] == INTERACTION_LOG_BODY
@@ -396,7 +396,7 @@ def test_knowledge_map_parses_js_km_shape() -> None:
     assert result.name == "concept types"
     assert result.version_id == "8b1f3c2e-0d4a-4f6b-9c7d-1e2f3a4b5c6d"
     assert result.version_status == "Version3"
-    assert result.version_created == datetime(2022, 4, 20, 13, 13, 31, tzinfo=timezone.utc)
+    assert result.version_created == datetime(2022, 4, 20, 13, 13, 31, tzinfo=UTC)
     assert result.is_draft is False
     # `Km.versionNumber` is a field in domain.ts; Python's `version_number` returns the explicit
     # field when present (since 1.1.0; before, it only derived it from `versionStatus`).

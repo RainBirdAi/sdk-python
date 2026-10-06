@@ -377,7 +377,7 @@ def parse_retry_after(response: httpx.Response) -> float | None:
     except ValueError:
         try:
             when = parsedate_to_datetime(value)
-            return max(0.0, (when - _dt.datetime.now(tz=_dt.timezone.utc)).total_seconds())
+            return max(0.0, (when - _dt.datetime.now(tz=_dt.UTC)).total_seconds())
         except (TypeError, ValueError):
             return None
 

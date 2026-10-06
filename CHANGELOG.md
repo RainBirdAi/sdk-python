@@ -7,6 +7,13 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Minimum Python version raised from 3.10 to 3.11.** Python 3.10 reaches end of life in
+  October 2026, and 3.10 was never exercised by the test suite (its `inspect.isclass` treats the
+  `Answerer`/`AsyncAnswerer` `Callable[...]` aliases as classes, which tripped four public-API
+  hygiene tests). `requires-python`, the classifiers, ruff's and mypy's targets now say 3.11.
+
 ## [0.3.0] - 2026-10-05
 
 ### Added

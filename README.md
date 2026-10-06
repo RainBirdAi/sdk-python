@@ -22,7 +22,7 @@ pip install rainbird-ai            # or: python -m pip install "rainbird-ai"
 uv add rainbird-ai
 ```
 
-Requires Python 3.10 or newer. Runtime dependencies are [httpx](https://www.python-httpx.org/) and
+Requires Python 3.11 or newer. Runtime dependencies are [httpx](https://www.python-httpx.org/) and
 [anyio](https://anyio.readthedocs.io/) (the async client sleeps through it between retries).
 
 ## Getting your API key and knowledge map ID
@@ -586,7 +586,7 @@ http.close()
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.11+
 - `httpx>=0.27,<1.0`
 - `anyio>=4`
 

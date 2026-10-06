@@ -44,7 +44,7 @@ Differences found (Python behaviour is asserted, Go behaviour noted inline):
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -318,7 +318,7 @@ def test_session_km_version_returns_version_info() -> None:
     assert km.id == "5042ae3a-723a-45fa-bd6c-2d09e96e75f6"
     assert km.name == "concept types"
     assert km.version_id == "5042ae3a-723a-45fa-bd6c-2d09e96e75f6"
-    created = datetime(2022, 4, 20, 13, 13, 31, tzinfo=timezone.utc)  # time.Parse(RFC3339, ...)
+    created = datetime(2022, 4, 20, 13, 13, 31, tzinfo=UTC)  # time.Parse(RFC3339, ...)
     assert km.version_created == created
     assert km.version_created is not None and km.version_created.tzinfo is not None
     assert km.version_status == "Draft"

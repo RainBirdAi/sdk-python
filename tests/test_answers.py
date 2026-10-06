@@ -257,7 +257,7 @@ class TestCoerceValue:
         early = dt.datetime(2024, 3, 1, 0, 30, tzinfo=dt.timezone(dt.timedelta(hours=9)))
         assert coerce_value(late) == "2024-03-01"
         assert coerce_value(early) == "2024-03-01"
-        assert coerce_value(dt.datetime(2024, 3, 1, 12, tzinfo=dt.timezone.utc)) == "2024-03-01"
+        assert coerce_value(dt.datetime(2024, 3, 1, 12, tzinfo=dt.UTC)) == "2024-03-01"
 
     def test_datetime_and_date_coerce_to_the_same_string(self) -> None:
         assert coerce_value(dt.datetime(2024, 3, 1, 12, 30)) == coerce_value(dt.date(2024, 3, 1))

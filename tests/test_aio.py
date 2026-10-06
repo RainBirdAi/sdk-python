@@ -88,7 +88,7 @@ IF_FACT, AF_FACT = list(
     EVIDENCE_LEAVES
 )  # "Tom lives in Germany", "Germany national language German"
 STUDIO_URL = "https://fake.rainbird.ai"  # studio host derived from BASE_URL
-UTC = dt.timezone.utc
+UTC = dt.UTC
 
 
 # --------------------------------------------------------------------------- helpers / fixtures

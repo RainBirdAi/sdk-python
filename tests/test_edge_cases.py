@@ -237,7 +237,7 @@ class TestCoercionEdges:
         assert type(coerce_value(decimal.Decimal("1E+2"))) is int
 
     def test_datetime_drops_time_of_day(self) -> None:
-        value = dt.datetime(2024, 3, 1, 23, 59, tzinfo=dt.timezone.utc)
+        value = dt.datetime(2024, 3, 1, 23, 59, tzinfo=dt.UTC)
         assert coerce_value(value) == "2024-03-01"
 
     def test_subject_enum_answer_is_sent_as_its_value(self) -> None:

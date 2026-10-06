@@ -91,7 +91,7 @@ def _parse_datetime(value: Any) -> _dt.datetime | None:
             return None
         seconds = value / 1000 if abs(value) > 1e11 else value
         try:
-            return _dt.datetime.fromtimestamp(seconds, tz=_dt.timezone.utc)
+            return _dt.datetime.fromtimestamp(seconds, tz=_dt.UTC)
         except (OverflowError, OSError, ValueError):
             return None
     if isinstance(value, str):
@@ -99,20 +99,13 @@ def _parse_datetime(value: Any) -> _dt.datetime | None:
         if text.endswith(("Z", "z")):
             text = text[:-1] + "+00:00"
         try:
+            # 3.11+ accepts any number of fractional digits (Rainbird sends up to 9) and
+            # truncates them to microseconds.
             parsed = _dt.datetime.fromisoformat(text)
         except ValueError:
-            # Python 3.10 only accepts 3 or 6 fractional digits; Rainbird sends up to 9.
-            head, dot, tail = text.partition(".")
-            digits = len(tail) - len(tail.lstrip("0123456789"))
-            if not dot or digits == 0:
-                return None
-            frac, offset = tail[:digits][:6].ljust(6, "0"), tail[digits:]
-            try:
-                parsed = _dt.datetime.fromisoformat(f"{head}.{frac}{offset}")
-            except ValueError:
-                return None
+            return None
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=_dt.timezone.utc)
+            parsed = parsed.replace(tzinfo=_dt.UTC)
         return parsed
     return None
 

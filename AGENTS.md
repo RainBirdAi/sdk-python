@@ -25,7 +25,7 @@ Every `query`, `respond`, `answer`, `skip` and `undo` call returns either a
 ## 2. Install and import
 
 ```bash
-pip install rainbird-ai        # Python >= 3.10, runtime dependencies: httpx, anyio
+pip install rainbird-ai        # Python >= 3.11, runtime dependencies: httpx, anyio
 ```
 
 ```python

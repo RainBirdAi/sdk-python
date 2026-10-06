@@ -68,7 +68,7 @@ SESSION_ID = "1234-5678"
 # client_test.go:928
 GO_API_KEY = "1234567890-1234-1234-1234-1234567890ab"
 # Go: time.Parse("2006-01-02T03:04:05", "2022-02-15T00:00:00") is 2022-02-15 00:00:00 UTC.
-CREATED = dt.datetime(2022, 2, 15, 0, 0, 0, tzinfo=dt.timezone.utc)
+CREATED = dt.datetime(2022, 2, 15, 0, 0, 0, tzinfo=dt.UTC)
 INTERACTIONS_PATH = f"/analysis/interactions/{SESSION_ID}"
 # DIFFERENCE(go): Go's handler asserts r.RequestURI == "/analysis/interactions/1234-5678" (bare
 # path, client_test.go:918); Python's request-URI always carries ?format=json.
