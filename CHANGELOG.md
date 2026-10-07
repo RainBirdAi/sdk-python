@@ -7,6 +7,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-07
+
 ### Changed
 
 - **Minimum Python version raised from 3.10 to 3.11.** Python 3.10 reaches end of life in
@@ -257,7 +259,8 @@ class are gone; the new package is `rainbird-ai` on PyPI with import name `rainb
 | `ValueError("Session not started. Call start() first.")`     | gone: session methods live on the `Session` returned by `rb.start()` / `rb.resume()` |
 | `except requests.HTTPError` / `except ValueError`            | `except RainbirdAPIError` / `except RainbirdError` (`RainbirdConfigurationError`, `InvalidAnswerError` and `InvalidFactError` still subclass `ValueError`) |
 
-[Unreleased]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/juliodt-ai/rainbird-python-sdk/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/juliodt-ai/rainbird-python-sdk/releases/tag/v0.1.0
