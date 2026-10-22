@@ -8,12 +8,12 @@ share one API; every response is a typed, frozen dataclass that keeps the origin
 
 [![PyPI](https://img.shields.io/pypi/v/rainbird-ai.svg)](https://pypi.org/project/rainbird-ai/)
 [![Python versions](https://img.shields.io/pypi/pyversions/rainbird-ai.svg)](https://pypi.org/project/rainbird-ai/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/RainBirdAi/sdk-python/blob/main/LICENSE)
 
 > **Status: alpha.** The package is usable and tested, but it is pre-1.0: the public API may
 > change between minor versions (`0.x`) and every such change is listed in
-> [CHANGELOG.md](CHANGELOG.md). Pin a minor version (`rainbird-ai~=0.3.0`) if you need
-> stability.
+> [CHANGELOG.md](https://github.com/RainBirdAi/sdk-python/blob/main/CHANGELOG.md). Pin a minor
+> version (`rainbird-ai~=0.5.0`) if you need stability.
 
 ## Installation
 
@@ -84,6 +84,8 @@ q.known_answers, response.questions             # values already known; main + e
 from a plain Python value and remembers the pending question for you:
 
 ```python
+from datetime import date
+
 session.answer(True)                       # First Form: True/False or "yes"/"no"
 session.answer("German")                   # Second Form Object
 session.answer("Tom")                      # Second Form Subject
@@ -184,13 +186,15 @@ d.to_dict()       # flat JSON-serialisable dict of all of the above
 
 Facts are injected only when given (any shape `inject()` accepts). Without an `answerer` the
 first question ends the call with `status == DecisionStatus.QUESTION`; `d.session` is the
-`Session` with that question pending, so `d.session.answer("German")` continues it (or resume
-later with `rb.resume(d.session_id)`). Pass `answerer=` to have questions answered through
-`session.run()` (`max_questions` applies), which makes the decision always final. An empty
-result is `NO_RESULT` (`decision` is `None`, or `False` for a subject + object check), not an
-error; API and network failures raise as usual. Evidence fetching is off by default because it
-costs one request per node and needs the map's evidence key (`evidence_key=` or
-`RAINBIRD_EVIDENCE_KEY`). `use_draft`, `version` and `context_id` are forwarded to `start()`.
+`Session` with that question pending, so `d.session.answer("German")` continues it. A session
+reattached later with `rb.resume(d.session_id)` does not know the pending question, so pass it
+back: `rb.resume(d.session_id).answer("German", question=d.question)`. Pass `answerer=` to have
+questions answered through `session.run()` (`max_questions` applies), which makes the decision
+always final. An empty result is `NO_RESULT` (`decision` is `None`, or `False` for a subject +
+object check), not an error; API and network failures raise as usual. Evidence fetching is off
+by default because it costs one request per node and needs the map's evidence key
+(`evidence_key=` or `RAINBIRD_EVIDENCE_KEY`). `use_draft`, `version` and `context_id` are
+forwarded to `start()`.
 The async twin is `await AsyncRainbird.decide(...)`, and the CLI has `rainbird decide`.
 
 ## Injecting facts
@@ -522,7 +526,7 @@ rainbird evidence --session SID --fact-id WA:RF:... --tree --url   # nested tree
 rainbird interact "Tom lives in Germany. What does Tom speak?"
 rainbird interactions --session SID --format csv
 rainbird map get KM_ID --out map.rbl                          # undocumented endpoint
-rainbird map create --name "My map" --file map.rbl [--description "..."]   # undocumented endpoint
+rainbird map create --name "My map" --file map.rbl --description "Claims triage"   # --description is optional
 ```
 
 Further commands: `respond`, `undo`, `explain`, `facts`, `session`; run `rainbird COMMAND --help`.
@@ -549,11 +553,12 @@ spaces under the fact it supports, inline conditions as `- ...` lines, facts ref
 expression functions beneath their expression, and anything fetched but not reachable from the
 root appended at the end.
 
-Exit codes: `0` success; `1` API, SDK or file error (message on stderr); `2` usage error (also an
-invalid `--fact`, such as a non-numeric or out-of-range certainty, or malformed or wrongly shaped
-`--file` / `respond` JSON); `3` a question is still
-pending and no input is available (`--no-input`, non-interactive stdin or Ctrl-D): the question is
-printed to stdout (with `--json`, the question response plus `"session_id"`) and
+Exit codes: `0` success; `1` API, SDK or file error (message on stderr; this includes `respond`
+answers that are valid JSON but not answer-shaped, which are rejected before any request); `2`
+usage error (also an invalid `--fact`, such as a non-numeric or out-of-range certainty, malformed
+or wrongly shaped `--file` JSON, or `respond` answers that are not valid JSON); `3` a question is
+still pending and no input is available (`--no-input`, non-interactive stdin or Ctrl-D): the
+question is printed to stdout (with `--json`, the question response plus `"session_id"`) and
 `rainbird: session SID is waiting for an answer; resume with --session SID` to stderr; `130`
 interrupted.
 
@@ -587,7 +592,7 @@ http.close()
 ## Requirements
 
 - Python 3.11+
-- `httpx>=0.27,<1.0`
+- `httpx>=0.28,<1.0`
 - `anyio>=4`
 
 ## Links
@@ -608,4 +613,4 @@ RAINBIRD_API_KEY=... RAINBIRD_KM_ID=... .venv/bin/pytest -m integration   # real
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/RainBirdAi/sdk-python/blob/main/LICENSE).

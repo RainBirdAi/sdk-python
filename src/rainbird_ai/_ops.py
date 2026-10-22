@@ -13,9 +13,11 @@ from typing import Any
 
 import httpx
 
+from ._answers import coerce_value
 from ._http import (
     NL_VERSION,
     Request,
+    clean_key,
     extract_error_messages,
     json_body,
     path_segment,
@@ -116,6 +118,20 @@ def inject(session_id: str, facts: list[dict[str, Any]]) -> Request[InjectRespon
     )
 
 
+def query_body(relationship: str, *, subject: Any = None, object: Any = None) -> dict[str, Any]:
+    """The ``POST /query`` body, with subject and object coerced like fact values.
+
+    A ``date`` is sent as ``"YYYY-MM-DD"``; an unsupported value (``NaN``, a dict, ...)
+    raises :class:`~rainbird_ai.errors.InvalidAnswerError` before any request is made.
+    """
+    body: dict[str, Any] = {"relationship": _require(relationship, "relationship")}
+    if subject is not None and subject != "":
+        body["subject"] = coerce_value(subject)
+    if object is not None and object != "":
+        body["object"] = coerce_value(object)
+    return body
+
+
 def query(
     session_id: str,
     relationship: str,
@@ -123,15 +139,10 @@ def query(
     subject: Any = None,
     object: Any = None,
 ) -> Request[QueryResponse]:
-    body: dict[str, Any] = {"relationship": _require(relationship, "relationship")}
-    if subject is not None and subject != "":
-        body["subject"] = subject
-    if object is not None and object != "":
-        body["object"] = object
     return Request(
         method="POST",
         path=f"{path_segment(session_id, 'session_id')}/query",
-        json=body,
+        json=query_body(relationship, subject=subject, object=object),
         parse=_decision,
     )
 
@@ -158,7 +169,8 @@ def undo(session_id: str) -> Request[QueryResponse]:
 
 
 def evidence(fact_id: str, session_id: str, evidence_key: str | None = None) -> Request[Evidence]:
-    headers = {"x-evidence-key": evidence_key} if evidence_key else {}
+    key = clean_key(evidence_key)
+    headers = {"x-evidence-key": key} if key else {}
     return Request(
         method="GET",
         path=(
@@ -173,7 +185,8 @@ def evidence(fact_id: str, session_id: str, evidence_key: str | None = None) -> 
 def interactions_json(
     session_id: str, interaction_key: str | None = None
 ) -> Request[list[InteractionEvent]]:
-    headers = {"x-interaction-key": interaction_key} if interaction_key else {}
+    key = clean_key(interaction_key)
+    headers = {"x-interaction-key": key} if key else {}
 
     def parse(response: httpx.Response) -> list[InteractionEvent]:
         data = json_body(response)
@@ -208,7 +221,8 @@ def interactions_json(
 
 
 def interactions_csv(session_id: str, interaction_key: str | None = None) -> Request[str]:
-    headers = {"x-interaction-key": interaction_key} if interaction_key else {}
+    key = clean_key(interaction_key)
+    headers = {"x-interaction-key": key} if key else {}
     return Request(
         method="GET",
         path=f"analysis/interactions/{path_segment(session_id, 'session_id')}",

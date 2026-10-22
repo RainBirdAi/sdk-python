@@ -515,8 +515,8 @@ Deduplicated across all units. "Go" / "JS" names the sibling(s) that differ from
 
 `constants.go` in the Go SDK has `EnvEnterprise = "https://api-enterprise.rainbird.ai"`, while
 the JS SDK's `URL_ENTERPRISE` and Python's `Environment.ENTERPRISE` are
-`https://enterprise-api.rainbird.ai` (the value documented in `CLAUDE.md`). The Go constant may
-be stale; not asserted anywhere here.
+`https://enterprise-api.rainbird.ai` (the host that answers). The Go constant may be stale; not
+asserted anywhere here.
 
 ## Possible gaps or bugs in the Python SDK
 

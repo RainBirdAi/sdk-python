@@ -9,9 +9,9 @@ description = "Python SDK for the Rainbird decision intelligence API: sessions, 
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Julio Diez Tomillo", email = "julio@rainbird.ai" }]
+authors = [{ name = "Rainbird Development Team", email = "developmentteam@rainbird.ai" }]
 requires-python = ">=3.11"
-dependencies = ["httpx>=0.27,<1.0", "anyio>=4"]
+dependencies = ["httpx>=0.28,<1.0", "anyio>=4"]
 keywords = [
   "rainbird", "api", "sdk", "knowledge-map", "knowledge-graph", "reasoning",
   "decision-intelligence", "explainable-ai", "rblang",
@@ -40,12 +40,12 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/juliodt-ai/rainbird-python-sdk"
+Homepage = "https://github.com/RainBirdAi/sdk-python"
 Documentation = "https://docs.rainbird.ai/rainbird/developer-docs/overview"
 "API Reference" = "https://rainbird.redoc.ly/"
-Source = "https://github.com/juliodt-ai/rainbird-python-sdk"
-Issues = "https://github.com/juliodt-ai/rainbird-python-sdk/issues"
-Changelog = "https://github.com/juliodt-ai/rainbird-python-sdk/blob/main/CHANGELOG.md"
+Source = "https://github.com/RainBirdAi/sdk-python"
+Issues = "https://github.com/RainBirdAi/sdk-python/issues"
+Changelog = "https://github.com/RainBirdAi/sdk-python/blob/main/CHANGELOG.md"
 
 [project.scripts]
 rainbird = "rainbird_ai.cli:main"
@@ -57,7 +57,7 @@ path = "src/rainbird_ai/_version.py"
 packages = ["src/rainbird_ai"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/rainbird_ai", "tests", "README.md", "LICENSE", "CHANGELOG.md", "AGENTS.md", "llms.txt"]
+include = ["src/rainbird_ai", "tests", "README.md", "LICENSE", "CHANGELOG.md", "AGENTS.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

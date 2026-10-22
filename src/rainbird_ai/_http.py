@@ -205,17 +205,20 @@ class ClientConfig:
     ``timeout_explicit`` records whether the caller passed ``timeout``; when they did
     and also supplied their own ``httpx`` client, the value is applied per request so
     it is never silently ignored.
+
+    The keys and ``default_headers`` (which may carry ``x-api-key``) are left out of
+    ``repr()``, so printing or logging a config never shows a secret.
     """
 
-    api_key: str
+    api_key: str = field(repr=False)
     base_url: str
-    evidence_key: str | None = None
-    interaction_key: str | None = None
+    evidence_key: str | None = field(default=None, repr=False)
+    interaction_key: str | None = field(default=None, repr=False)
     engine: str | None = None
     timeout: float | httpx.Timeout | None = DEFAULT_TIMEOUT
     timeout_explicit: bool = False
     retry: RetryPolicy = RetryPolicy()
-    default_headers: Mapping[str, str] = field(default_factory=dict)
+    default_headers: Mapping[str, str] = field(default_factory=dict, repr=False)
 
     @classmethod
     def resolve(
@@ -249,8 +252,10 @@ class ClientConfig:
         return cls(
             api_key=key,
             base_url=normalize_base_url(base_url, env),
-            evidence_key=evidence_key if evidence_key is not None else env.get(ENV_EVIDENCE_KEY),
-            interaction_key=(
+            evidence_key=clean_key(
+                evidence_key if evidence_key is not None else env.get(ENV_EVIDENCE_KEY)
+            ),
+            interaction_key=clean_key(
                 interaction_key if interaction_key is not None else env.get(ENV_INTERACTION_KEY)
             ),
             engine=engine if engine is not None else env.get(ENV_ENGINE),
@@ -267,6 +272,30 @@ class ClientConfig:
         if self.engine:
             headers["x-rainbird-engine"] = self.engine
         return merge_headers(headers, self.default_headers)
+
+
+def clean_key(value: Any) -> str | None:
+    """Strip a key (a pasted value, a CRLF ``.env`` file); ``None`` when nothing is left."""
+    text = "" if value is None else str(value).strip()
+    return text or None
+
+
+# What an HTTP header value may hold: visible ASCII, spaces and tabs (no line breaks or controls).
+_HEADER_VALUE_RE = re.compile(r"[\t\x20-\x7e]*")
+
+
+def check_header_values(headers: Mapping[str, str]) -> None:
+    """Reject header values httpx cannot send, naming the header but never echoing the value.
+
+    The value is usually a key. Left to httpx, a stray line break fails in the transport
+    with the raw value in the error message, and a smart quote raises ``UnicodeEncodeError``.
+    """
+    for name, value in headers.items():
+        if isinstance(value, str) and not _HEADER_VALUE_RE.fullmatch(value):
+            raise RainbirdConfigurationError(
+                f"the {name} header contains a line break, control character or non-ASCII "
+                "character (check how the value was copied); the request was not sent"
+            )
 
 
 def merge_headers(*layers: Mapping[str, str] | None) -> dict[str, str]:
@@ -506,6 +535,7 @@ class _BaseTransport:
         headers = merge_headers(
             self.config.base_headers(), {"Accept": request.accept}, request.headers, extra_headers
         )
+        check_header_values(headers)
         kwargs: dict[str, Any] = {
             "method": request.method.upper(),
             "url": build_url(self.config.base_url, request.path),

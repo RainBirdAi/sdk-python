@@ -210,10 +210,18 @@ class TestParser:
         assert result.code == 2
         assert "required" in result.err.lower()
 
-    def test_sdk_version_flag(self, run: Runner) -> None:
-        result = run("-V")
+    @pytest.mark.parametrize("flag", ["-V", "--version", "--sdk-version"])
+    def test_sdk_version_flag(self, run: Runner, flag: str) -> None:
+        result = run(flag)
         assert result.code == 0
         assert result.out.strip() == f"rainbird-ai {__version__}"
+
+    @pytest.mark.parametrize("command", ["start", "query", "decide"])
+    def test_version_after_a_subcommand_is_the_map_version(self, command: str) -> None:
+        argv = [command, "--version", "3"]
+        if command != "start":
+            argv += ["-r", "speaks", "-s", "Tom"]
+        assert cli.build_parser().parse_args(argv).version == 3
 
     def test_help_lists_commands(self, run: Runner) -> None:
         result = run("--help")

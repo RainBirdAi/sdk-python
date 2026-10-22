@@ -173,11 +173,14 @@ class AsyncRainbird:
     ) -> Decision:
         """Async version of :meth:`rainbird_ai.Rainbird.decide` (``answerer`` may be async)."""
         _check_evidence_mode(evidence)
+        # Validate the query and the facts before starting a session that would be left unused.
+        query = _ops.query_body(relationship, subject=subject, object=object)
+        payload = normalize_facts(facts) if facts else None
         session = await self.start(
             km_id, use_draft=use_draft, version=version, context_id=context_id
         )
-        if facts:
-            await session.inject(facts)
+        if payload:
+            await session.inject(payload)
         if answerer is None:
             response = await session.query(relationship, subject=subject, object=object)
         else:
@@ -201,8 +204,8 @@ class AsyncRainbird:
             response,
             session_id=session.id,
             relationship=relationship,
-            subject=subject,
-            object=object,
+            subject=query.get("subject", subject),  # the coerced value, so to_dict() stays JSON
+            object=query.get("object", object),
             evidence=nodes,
             evidence_url=session.evidence_url(fact_id) if fact_id else None,
             km_id=session.km_id,

@@ -530,6 +530,21 @@ class TestInject:
 
 
 class TestQuery:
+    async def test_date_values_are_coerced(self, session: AsyncSession, fake: FakeRainbird) -> None:
+        await session.query("born on", subject="Tom", object=dt.date(2024, 1, 31))
+        assert fake.last.json == {
+            "relationship": "born on",
+            "subject": "Tom",
+            "object": "2024-01-31",
+        }
+
+    async def test_unsupported_value_raises_before_any_request(
+        self, session: AsyncSession, fake: FakeRainbird
+    ) -> None:
+        with pytest.raises(InvalidAnswerError):
+            await session.query("born on", subject="Tom", object=float("nan"))
+        assert fake.calls("/query") == []
+
     async def test_query_result(self, session: AsyncSession, fake: FakeRainbird) -> None:
         response = await session.query("speaks", subject="Tom")
         assert isinstance(response, ResultResponse)
@@ -2461,6 +2476,27 @@ class TestDecideAsync:
         assert decision.evidence_url == (
             f"{STUDIO_URL}/evidence?id={ROOT_FACT}&api={BASE_URL}&sid={decision.session_id}"
         )
+
+    @pytest.mark.parametrize(
+        ("kwargs", "error"),
+        [
+            ({"object": float("nan")}, InvalidAnswerError),
+            ({"facts": [("Tom", "lives in")]}, InvalidFactError),
+        ],
+    )
+    async def test_invalid_input_raises_before_any_request(
+        self, rb: AsyncRainbird, fake: FakeRainbird, kwargs: dict[str, Any], error: type
+    ) -> None:
+        with pytest.raises(error):
+            await rb.decide("speaks", km_id=KM_ID, subject="Tom", **kwargs)
+        assert fake.requests == []
+
+    async def test_date_object_is_coerced(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        decision = await rb.decide(
+            "born on", km_id=KM_ID, subject="Tom", object=dt.date(2024, 1, 31)
+        )
+        assert fake.calls("/query")[0].json["object"] == "2024-01-31"
+        assert decision.object == "2024-01-31"
 
     async def test_question_and_continue(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
         fake.queue_question(QUESTION_SECOND_OBJECT)

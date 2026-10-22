@@ -628,8 +628,13 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one statement 
         "RAINBIRD_EVIDENCE_KEY, RAINBIRD_INTERACTION_KEY, RAINBIRD_ENGINE. "
         "Global options may also be given after the subcommand.",
     )
+    # Top-level only: after a subcommand, ``--version N`` is the knowledge map version.
     parser.add_argument(
-        "-V", "--sdk-version", action="version", version=f"rainbird-ai {__version__}"
+        "-V",
+        "--version",
+        "--sdk-version",
+        action="version",
+        version=f"rainbird-ai {__version__}",
     )
     _add_global_options(parser, suppress=False)
     common = argparse.ArgumentParser(add_help=False)
