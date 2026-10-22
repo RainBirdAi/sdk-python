@@ -821,6 +821,26 @@ class TestClientConfigResolve:
     def test_key_is_stripped(self) -> None:
         assert _resolve(api_key="  abc  ").api_key == "abc"
 
+    @pytest.mark.parametrize("raw", ["  key  ", "key\r", "key\r\n", "\tkey"])
+    def test_evidence_and_interaction_keys_are_stripped(self, raw: str) -> None:
+        cfg = _resolve(api_key="k", evidence_key=raw, interaction_key=raw)
+        assert (cfg.evidence_key, cfg.interaction_key) == ("key", "key")
+
+    def test_env_evidence_and_interaction_keys_are_stripped(self) -> None:
+        env = {
+            "RAINBIRD_API_KEY": "k",
+            "RAINBIRD_EVIDENCE_KEY": "ev\r",  # a CRLF .env file
+            "RAINBIRD_INTERACTION_KEY": " ix\r\n",
+        }
+        cfg = _resolve(env=env)
+        assert (cfg.evidence_key, cfg.interaction_key) == ("ev", "ix")
+
+    @pytest.mark.parametrize("raw", ["", "   ", "\r\n"])
+    def test_blank_evidence_and_interaction_keys_become_none(self, raw: str) -> None:
+        cfg = _resolve(api_key="k", evidence_key=raw, interaction_key=raw, env=ALL_ENV)
+        assert cfg.evidence_key is None
+        assert cfg.interaction_key is None
+
     def test_default_base_url_when_unset(self) -> None:
         cfg = _resolve(api_key="k")
         assert cfg.base_url == DEFAULT_BASE_URL == "https://api.rainbird.ai"
@@ -923,6 +943,18 @@ class TestClientConfigResolve:
     def test_config_is_frozen(self) -> None:
         with pytest.raises(FrozenInstanceError):
             _config().api_key = "other"  # type: ignore[misc]
+
+    def test_repr_hides_keys_and_default_headers(self) -> None:
+        cfg = _resolve(
+            api_key="SECRET-API",
+            evidence_key="SECRET-EV",
+            interaction_key="SECRET-IX",
+            default_headers={"x-api-key": "SECRET-HEADER"},
+        )
+        assert "SECRET" not in repr(cfg)
+        assert "SECRET" not in str(cfg)
+        assert f"base_url={DEFAULT_BASE_URL!r}" in repr(cfg)
+        assert "SECRET" not in repr(Rainbird(api_key="SECRET-API").config)
 
 
 class TestBaseHeaders:
@@ -1250,6 +1282,49 @@ class TestSyncTransportPrepare:
         http = httpx.Client(transport=httpx.MockTransport(handler))
         SyncTransport(config, http).send(GET_THINGS)
         assert handler.requests[0].headers.get_list("x-api-key") == ["override"]
+
+    @pytest.mark.parametrize(
+        ("config", "extra", "header"),
+        [
+            ({"api_key": "SECRET\r"}, None, "X-API-Key"),
+            ({"api_key": "SECRET\r\nX-Injected: 1"}, None, "X-API-Key"),
+            ({"api_key": "‘SECRET’"}, None, "X-API-Key"),  # pasted smart quotes
+            ({"engine": "Expérimental SECRET"}, None, "x-rainbird-engine"),
+            ({"default_headers": {"Authorization": "SECRET\x00"}}, None, "Authorization"),
+            ({}, {"x-evidence-key": "SECRET\n"}, "x-evidence-key"),
+        ],
+    )
+    def test_unsendable_header_value_rejected_without_echoing_it(
+        self, config: dict[str, Any], extra: dict[str, str] | None, header: str
+    ) -> None:
+        handler = ScriptedHandler()
+        http = httpx.Client(transport=httpx.MockTransport(handler))
+        with pytest.raises(RainbirdConfigurationError) as info:
+            SyncTransport(_config(**config), http).send(GET_THINGS, extra_headers=extra)
+        assert f"the {header} header contains" in str(info.value)
+        assert "SECRET" not in str(info.value)
+        assert handler.calls == 0
+
+    def test_spaces_tabs_and_punctuation_allowed_in_header_values(self) -> None:
+        handler = ScriptedHandler()
+        config = _config(engine="Experimental (Beta)")
+        http = httpx.Client(transport=httpx.MockTransport(handler))
+        SyncTransport(config, http).send(GET_THINGS, extra_headers={"X-Note": "a\tb ~!@#"})
+        assert handler.requests[0].headers["x-rainbird-engine"] == "Experimental (Beta)"
+        assert handler.requests[0].headers["x-note"] == "a\tb ~!@#"
+
+
+@pytest.mark.anyio
+class TestAsyncTransportPrepare:
+    async def test_unsendable_header_value_rejected_without_echoing_it(self) -> None:
+        handler = ScriptedHandler()
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        transport = AsyncTransport(_config(api_key="SECRET\r"), http)
+        with pytest.raises(RainbirdConfigurationError) as info:
+            await transport.send(GET_THINGS)
+        assert "the X-API-Key header contains" in str(info.value)
+        assert "SECRET" not in str(info.value)
+        assert handler.calls == 0
 
 
 # --------------------------------------------------------------------------- sync retry loop

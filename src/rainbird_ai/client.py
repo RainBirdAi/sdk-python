@@ -211,9 +211,11 @@ class Rainbird:
         ``use_draft``, ``version`` and ``context_id`` are passed to :meth:`start`.
 
         Without an ``answerer`` the first question the engine asks ends the call with
-        ``status == DecisionStatus.QUESTION``; continue it with ``decision.session.answer(...)``
-        or later via :meth:`resume`. With an ``answerer`` the questions are answered through
-        :meth:`Session.run` (at most ``max_questions``) so the result is always final.
+        ``status == DecisionStatus.QUESTION``; continue it with ``decision.session.answer(...)``,
+        or later with ``resume(decision.session_id).answer(..., question=decision.question)``
+        (a resumed session does not know the pending question). With an ``answerer`` the
+        questions are answered through :meth:`Session.run` (at most ``max_questions``) so the
+        result is always final.
 
         ``evidence="root"`` also fetches the evidence node of the best result and ``"tree"``
         its whole evidence tree (``evidence_depth`` limits it); both need the map's evidence
@@ -221,9 +223,12 @@ class Rainbird:
         ``Decision.evidence_url`` is always filled when there is a ``fact_id``.
         """
         _check_evidence_mode(evidence)
+        # Validate the query and the facts before starting a session that would be left unused.
+        query = _ops.query_body(relationship, subject=subject, object=object)
+        payload = normalize_facts(facts) if facts else None
         session = self.start(km_id, use_draft=use_draft, version=version, context_id=context_id)
-        if facts:
-            session.inject(facts)
+        if payload:
+            session.inject(payload)
         if answerer is None:
             response = session.query(relationship, subject=subject, object=object)
         else:
@@ -247,8 +252,8 @@ class Rainbird:
             response,
             session_id=session.id,
             relationship=relationship,
-            subject=subject,
-            object=object,
+            subject=query.get("subject", subject),  # the coerced value, so to_dict() stays JSON
+            object=query.get("object", object),
             evidence=nodes,
             evidence_url=session.evidence_url(fact_id) if fact_id else None,
             km_id=session.km_id,

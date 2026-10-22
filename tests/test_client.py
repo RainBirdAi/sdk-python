@@ -8,6 +8,9 @@ HTTP requests the SDK produced.
 from __future__ import annotations
 
 import datetime as dt
+import enum
+import json
+from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -554,6 +557,10 @@ class TestInject:
 # =========================================================================== query
 
 
+class _Colour(enum.Enum):
+    RED = "red"
+
+
 class TestQuery:
     def test_body_with_subject(self, session: Session, fake: FakeRainbird) -> None:
         session.query("speaks", subject="Tom")
@@ -580,6 +587,33 @@ class TestQuery:
     def test_numeric_subject_is_kept(self, session: Session, fake: FakeRainbird) -> None:
         session.query("is even", subject=0)
         assert fake.last.json == {"relationship": "is even", "subject": 0}
+
+    @pytest.mark.parametrize(
+        ("value", "sent"),
+        [
+            (dt.date(2024, 1, 31), "2024-01-31"),
+            (dt.datetime(2024, 1, 31, 23, 59), "2024-01-31"),
+            (Decimal("42"), 42),
+            (Decimal("2.5"), 2.5),
+            (_Colour.RED, "red"),
+            (True, True),
+        ],
+    )
+    def test_values_are_coerced_like_fact_values(
+        self, session: Session, fake: FakeRainbird, value: Any, sent: Any
+    ) -> None:
+        session.query("born on", subject=value, object=value)
+        assert fake.last.json == {"relationship": "born on", "subject": sent, "object": sent}
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), Decimal("NaN"), {"a": 1}, [1]])
+    def test_unsupported_value_raises_before_any_request(
+        self, session: Session, fake: FakeRainbird, bad: Any
+    ) -> None:
+        with pytest.raises(InvalidAnswerError):
+            session.query("born on", subject="Tom", object=bad)
+        with pytest.raises(InvalidAnswerError):
+            session.query("born on", subject=bad)
+        assert fake.calls("/query") == []
 
     @pytest.mark.parametrize("bad", ["", "   ", None])
     def test_empty_relationship_raises(
@@ -1271,6 +1305,24 @@ class TestEvidence:
         session.evidence(ROOT_FACT_ID, evidence_key="only-explicit")
         assert fake.last.headers["x-evidence-key"] == "only-explicit"
 
+    def test_keys_are_stripped(self, make_client, fake: FakeRainbird, monkeypatch) -> None:
+        monkeypatch.setenv("RAINBIRD_EVIDENCE_KEY", "env-key\r")  # a CRLF .env file
+        session = make_client().start(KM_ID)
+        session.evidence(ROOT_FACT_ID)
+        assert fake.last.headers["x-evidence-key"] == "env-key"
+        session.evidence(ROOT_FACT_ID, evidence_key="  explicit-key\n")
+        assert fake.last.headers["x-evidence-key"] == "explicit-key"
+
+    def test_unsendable_key_rejected_without_echoing_it(
+        self, session: Session, fake: FakeRainbird
+    ) -> None:
+        before = len(fake.requests)
+        with pytest.raises(RainbirdConfigurationError) as info:
+            session.evidence(ROOT_FACT_ID, evidence_key="SECRET\r\nX-Injected: 1")
+        assert "x-evidence-key header" in str(info.value)
+        assert "SECRET" not in str(info.value)
+        assert len(fake.requests) == before
+
     def test_secured_evidence_without_key_is_permission_denied(
         self, session: Session, fake: FakeRainbird
     ) -> None:
@@ -1447,6 +1499,14 @@ class TestInteractions:
     def test_client_default_interaction_key(self, make_client, fake: FakeRainbird) -> None:
         make_client(interaction_key="ik-default").start(KM_ID).interactions(format="csv")
         assert fake.last.headers["x-interaction-key"] == "ik-default"
+
+    @pytest.mark.parametrize("fmt", ["json", "csv"])
+    def test_keys_are_stripped(self, make_client, fake: FakeRainbird, fmt: str) -> None:
+        session = make_client(interaction_key="ik-default\r\n").start(KM_ID)
+        session.interactions(format=fmt)  # type: ignore[call-overload]
+        assert fake.last.headers["x-interaction-key"] == "ik-default"
+        session.interactions(format=fmt, interaction_key=" ik-explicit ")  # type: ignore[call-overload]
+        assert fake.last.headers["x-interaction-key"] == "ik-explicit"
 
     def test_explicit_key_overrides_default(self, make_client, fake: FakeRainbird) -> None:
         make_client(interaction_key="ik-default").start(KM_ID).interactions(
@@ -2417,8 +2477,36 @@ class TestDecide:
     ) -> None:
         with pytest.raises(InvalidFactError):
             client.decide("speaks", km_id=KM_ID, subject="Tom", facts=[("Tom", "lives in")])
-        # the session was started (facts are validated by inject()) but nothing else was sent
-        assert [r.path.rsplit("/", 1)[-1] for r in fake.requests] == [KM_ID]
+        assert fake.requests == []
+
+    @pytest.mark.parametrize(
+        ("kwargs", "error"),
+        [
+            ({"relationship": ""}, RainbirdConfigurationError),
+            ({"object": float("nan")}, InvalidAnswerError),
+            ({"subject": {"name": "Tom"}}, InvalidAnswerError),
+        ],
+    )
+    def test_invalid_query_raises_before_any_request(
+        self, client: Rainbird, fake: FakeRainbird, kwargs: dict[str, Any], error: type
+    ) -> None:
+        args: dict[str, Any] = {"relationship": "speaks", "subject": "Tom", **kwargs}
+        relationship = args.pop("relationship")
+        with pytest.raises(error):
+            client.decide(relationship, km_id=KM_ID, facts=[("Tom", "lives in", "Germany")], **args)
+        assert fake.requests == []
+
+    def test_date_object_is_coerced_and_to_dict_stays_json(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        decision = client.decide("born on", km_id=KM_ID, subject="Tom", object=dt.date(2024, 1, 31))
+        assert fake.calls("/query")[0].json == {
+            "relationship": "born on",
+            "subject": "Tom",
+            "object": "2024-01-31",
+        }
+        assert decision.object == "2024-01-31"
+        json.dumps(decision.to_dict())
 
     def test_question_status(self, client: Rainbird, fake: FakeRainbird) -> None:
         fake.queue_question(QUESTION_SECOND_OBJECT)
@@ -2451,6 +2539,22 @@ class TestDecide:
         response = session.answer("German")
         assert isinstance(response, ResultResponse)
         assert fake.sessions[session.id]["answers"][-1]["answers"][0] == triple(
+            "Germany", "national language", "German"
+        )
+
+    def test_question_can_be_continued_after_resume(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        # The README recipe: a resumed session does not know the question, so pass it back.
+        fake.queue_question(QUESTION_SECOND_OBJECT)
+        fake.queue_result(*_result_items())
+        decision = client.decide("speaks", km_id=KM_ID, subject="Tom")
+        resumed = client.resume(decision.session_id)
+        with pytest.raises(NoPendingQuestionError):
+            resumed.answer("German")
+        response = resumed.answer("German", question=decision.question)
+        assert isinstance(response, ResultResponse)
+        assert fake.sessions[decision.session_id]["answers"][-1]["answers"][0] == triple(
             "Germany", "national language", "German"
         )
 
