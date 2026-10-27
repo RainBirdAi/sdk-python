@@ -3,7 +3,7 @@
 # Every merge request, branch and tag runs the checks, the tests on each supported Python, the
 # build and a test of the built wheel. A release tag (vX.Y.Z, matching the package version) adds
 # two manual jobs: publish to TestPyPI, which is then installed back and tested, and only after
-# that publish the same files to PyPI.
+# that publish the same files to PyPI, which is then installed the way users do and tested.
 #
 # Uploads use PyPI trusted publishing (no stored secret): twine >= 6.1 exchanges the GitLab OIDC
 # token in PYPI_ID_TOKEN / TESTPYPI_ID_TOKEN for a short-lived upload token. To use API tokens
@@ -17,6 +17,7 @@ stages:
   - testpypi
   - testpypi-verify
   - pypi
+  - pypi-verify
 
 workflow:
   rules:
@@ -193,3 +194,31 @@ publish-pypi:
     - if [ -n "${PYPI_API_TOKEN:-}" ]; then export TWINE_PASSWORD="$PYPI_API_TOKEN"; fi
     # No --skip-existing: uploading a version that is already on PyPI should fail loudly.
     - twine upload --non-interactive dist/*
+
+# Install the release from PyPI exactly as users do and test it. Nothing can be undone at this
+# point (PyPI never accepts a version twice), but a failure here means: yank it and fix in X.Y.Z+1.
+verify-pypi:
+  stage: pypi-verify
+  image: python:3.11-slim
+  dependencies: []
+  interruptible: false
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/
+  script:
+    - export VERSION="${CI_COMMIT_TAG#v}"
+    - |
+      for attempt in $(seq 1 10); do
+        if python -m pip install --no-cache-dir "rainbird-ai==${VERSION}" pytest; then
+          break
+        fi
+        if [ "$attempt" = 10 ]; then
+          echo "rainbird-ai ${VERSION} did not appear on PyPI"
+          exit 1
+        fi
+        echo "Not on PyPI yet (attempt ${attempt}/10); retrying in 30 s"
+        sleep 30
+      done
+    - python -m pip check
+    - test "$(rainbird --version)" = "rainbird-ai ${VERSION}"
+    - mkdir -p /tmp/package-test && cp -r tests /tmp/package-test/
+    - cd /tmp/package-test && python -I -m pytest -q -p no:cacheprovider tests
