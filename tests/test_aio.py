@@ -26,6 +26,7 @@ from rainbird_ai import (
     Answer,
     AuthenticationError,
     BadRequestError,
+    ConflictError,
     CreateMapResult,
     Decision,
     DecisionStatus,
@@ -54,11 +55,20 @@ from rainbird_ai import (
     RainbirdError,
     RainbirdTimeoutError,
     RateLimitError,
+    ReadmeAdded,
+    RequestTooLargeError,
     ResultResponse,
     RetryPolicy,
     ServerError,
     SessionFacts,
+    TestRunFailedError,
+    TestRunStarted,
+    TestRunStatus,
+    TestRunTimeoutError,
+    TestSuite,
+    TestSuiteCreated,
     UnexpectedResponseError,
+    ValidationResult,
 )
 from rainbird_ai import aio as aio_module
 from rainbird_ai.aio import AsyncRainbird, AsyncSession, async_engine_version
@@ -78,6 +88,11 @@ from tests.conftest import (
     QUESTION_SECOND_SUBJECT,
     RBLANG,
     RESULT_TOM_SPEAKS_GERMAN,
+    TEST_RUN_FAILED,
+    TEST_RUN_PASSED,
+    TEST_RUN_RUNNING,
+    TEST_SUITE,
+    VALIDATE_ERROR,
     FakeRainbird,
 )
 
@@ -2021,6 +2036,160 @@ class TestKnowledgeMaps:
         with pytest.raises(RainbirdConfigurationError, match="rblang"):
             await rb.create_map("Name", "  ")
         assert fake.requests == []
+
+
+# --------------------------------------------------------------------------- map tests, readme, validation
+
+
+@pytest.fixture
+def async_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record ``anyio.sleep`` calls (the async polling and back-off) instead of sleeping."""
+    recorded: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        recorded.append(seconds)
+
+    monkeypatch.setattr(anyio, "sleep", fake_sleep)
+    return recorded
+
+
+class TestMapTests:
+    async def test_create_and_get_tests(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        created = await rb.create_tests(KM_ID, TEST_SUITE)
+        assert isinstance(created, TestSuiteCreated)
+        assert (created.km_id, created.test_count) == (KM_ID, 1)
+        assert fake.last.method == "POST"
+        assert fake.last.path == f"/maps/{KM_ID}/tests"
+        assert fake.last.json == {"tests": TEST_SUITE}
+        assert fake.last.headers["version"] == "v1"
+        suite = await rb.get_tests(KM_ID)
+        assert isinstance(suite, TestSuite)
+        assert (suite.km_id, suite.test_count, suite.tests) == (KM_ID, 1, TEST_SUITE)
+        assert fake.last.method == "GET"
+        assert fake.last.path == f"/maps/{KM_ID}/tests"
+
+    async def test_create_twice_is_a_conflict(self, rb: AsyncRainbird) -> None:
+        await rb.create_tests(KM_ID, TEST_SUITE)
+        with pytest.raises(ConflictError, match="tests already exist"):
+            await rb.create_tests(KM_ID, TEST_SUITE)
+
+    async def test_certainty_instead_of_cf_is_rejected(
+        self, rb: AsyncRainbird, fake: FakeRainbird
+    ) -> None:
+        suite = [
+            {
+                "name": "t",
+                "steps": [
+                    {
+                        "expect": {},
+                        "then": {
+                            "type": "Inject",
+                            "inject": [
+                                {
+                                    "subject": "Fred",
+                                    "relationship": "speaks",
+                                    "object": "French",
+                                    "certainty": 80,
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ]
+        with pytest.raises(InvalidFactError, match=r"tests\[0\]\.steps\[0\]\.then\.inject\[0\]"):
+            await rb.create_tests(KM_ID, suite)
+        assert fake.requests == []
+
+    async def test_get_tests_without_tests_is_not_found(self, rb: AsyncRainbird) -> None:
+        with pytest.raises(NotFoundError, match="no tests found"):
+            await rb.get_tests(KM_ID)
+
+
+class TestTestRuns:
+    async def test_start_and_get_test_run(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        started = await rb.start_test_run(KM_ID)
+        assert isinstance(started, TestRunStarted)
+        assert (started.km_id, fake.test_runs) == (KM_ID, {started.run_id: KM_ID})
+        assert fake.last.json is None
+        fake.queue_run(TEST_RUN_RUNNING)
+        run = await rb.get_test_run(started.run_id)
+        assert isinstance(run, rainbird_ai.TestRun)  # the module has its own TestRun class
+        assert run.status is TestRunStatus.RUNNING and not run.is_finished
+        assert fake.last.path == f"/runs/{started.run_id}"
+        assert fake.last.headers["version"] == "v1"
+
+    async def test_run_tests_polls_with_anyio_sleep(
+        self, rb: AsyncRainbird, fake: FakeRainbird, async_sleeps: list[float]
+    ) -> None:
+        fake.queue_run(TEST_RUN_RUNNING, TEST_RUN_RUNNING, TEST_RUN_PASSED)
+        run = await rb.run_tests(KM_ID, poll_interval=1.5)
+        assert run.all_passed
+        assert async_sleeps == [1.5, 1.5]
+        assert len(fake.calls("/runs/")) == 3
+
+    async def test_failed_run_raises(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        fake.queue_run(TEST_RUN_FAILED)
+        with pytest.raises(TestRunFailedError) as info:
+            await rb.run_tests(KM_ID)
+        assert info.value.category == "suite_load"
+        assert info.value.run is not None and info.value.run.is_failed
+
+    async def test_timeout_then_resume(
+        self, rb: AsyncRainbird, fake: FakeRainbird, async_sleeps: list[float]
+    ) -> None:
+        fake.queue_run(TEST_RUN_RUNNING, TEST_RUN_PASSED)
+        with pytest.raises(TestRunTimeoutError) as info:
+            await rb.run_tests(KM_ID, timeout=0)
+        assert isinstance(info.value, RainbirdTimeoutError)
+        assert info.value.run_id == next(iter(fake.test_runs))
+        assert async_sleeps == []
+        run = await rb.wait_for_test_run(info.value.run_id or "", timeout=None)
+        assert run.all_passed
+
+    async def test_bad_polling_arguments_raise_before_starting_a_run(
+        self, rb: AsyncRainbird, fake: FakeRainbird
+    ) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="poll_interval"):
+            await rb.run_tests(KM_ID, poll_interval=0)
+        with pytest.raises(RainbirdConfigurationError, match="timeout"):
+            await rb.wait_for_test_run("r", timeout=-5)
+        assert fake.requests == []
+
+    async def test_unknown_run_is_not_found(self, rb: AsyncRainbird) -> None:
+        with pytest.raises(NotFoundError, match="run not found"):
+            await rb.wait_for_test_run("missing")
+
+
+class TestReadmeAndValidation:
+    async def test_add_readme(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        added = await rb.add_readme(KM_ID, "# Languages")
+        assert isinstance(added, ReadmeAdded)
+        assert added.km_id == KM_ID
+        assert fake.last.path == f"/maps/{KM_ID}/readme"
+        assert fake.last.json == {"readme": "# Languages"}
+        with pytest.raises(ConflictError, match="already has a readme"):
+            await rb.add_readme(KM_ID, "# Again")
+
+    async def test_add_readme_blank_raises(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="readme"):
+            await rb.add_readme(KM_ID, " ")
+        assert fake.requests == []
+
+    async def test_validate_rblang(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        result = await rb.validate_rblang(RBLANG)
+        assert isinstance(result, ValidationResult)
+        assert result.valid and len(result.warnings) == 2
+        assert fake.last.path == "/validate"
+        assert fake.last.headers["version"] == "v1"
+        invalid = await rb.validate_rblang("<kb/>")
+        assert not invalid.valid
+        assert invalid.raw == VALIDATE_ERROR
+
+    async def test_validate_rblang_413(self, rb: AsyncRainbird, fake: FakeRainbird) -> None:
+        fake.fail_next(413, {"error": "rblang is too large to validate"})
+        with pytest.raises(RequestTooLargeError, match="too large to validate"):
+            await rb.validate_rblang(RBLANG)
 
 
 # --------------------------------------------------------------------------- error mapping

@@ -27,6 +27,7 @@ from ._version import __version__
 from .errors import (
     AuthenticationError,
     BadRequestError,
+    ConflictError,
     NotFoundError,
     PermissionDeniedError,
     RainbirdAPIError,
@@ -35,6 +36,7 @@ from .errors import (
     RainbirdError,
     RainbirdTimeoutError,
     RateLimitError,
+    RequestTooLargeError,
     ServerError,
     UnexpectedResponseError,
 )
@@ -343,7 +345,8 @@ def extract_error_messages(body: Any) -> list[str]:
     """Collect human-readable error strings from any error body shape Rainbird uses.
 
     Known shapes: ``{"err": ["..."]}`` (400s), ``{"error": "..."}``,
-    ``{"error": {"message": "..."}}``, ``{"errors": [...]}``, ``{"message": "..."}``.
+    ``{"error": {"message": "..."}}``, ``{"errors": [...]}``, ``{"message": "..."}``, and
+    ``{"error": {"type": "UNHANDLED", "trace": "<uuid>"}}`` (rendered ``UNHANDLED (trace <uuid>)``).
     """
     messages: list[str] = []
 
@@ -363,7 +366,13 @@ def extract_error_messages(body: Any) -> list[str]:
                 if key in value:
                     found = True
                     add(value[key])
-            if not found:
+            # Map-management endpoints: {"type": "NO_PERMISSION"} or {"type": ..., "trace": ...}.
+            kind = value.get("type")
+            label = kind.strip() if isinstance(kind, str) else ""
+            if not found and label and set(value) <= {"type", "trace"}:
+                trace = value.get("trace")
+                messages.append(f"{label} (trace {trace})" if trace else label)
+            elif not found:
                 messages.append(json.dumps(value, sort_keys=True, default=str))
         else:
             messages.append(str(value))
@@ -440,6 +449,8 @@ _STATUS_DEFAULTS = {
     401: "Your API key is invalid",
     403: "Your API key does not permit access to this resource",
     404: "The resource (session, knowledge map or fact) could not be found",
+    409: "The request conflicts with what is stored; nothing was changed",
+    413: "The request body is too large",
     429: "Too many requests",
 }
 
@@ -484,6 +495,10 @@ def error_for_response(response: httpx.Response) -> RainbirdAPIError:
         return PermissionDeniedError(message, **kwargs)
     if status == 404:
         return NotFoundError(message, **kwargs)
+    if status == 409:
+        return ConflictError(message, **kwargs)
+    if status == 413:
+        return RequestTooLargeError(message, **kwargs)
     if status == 429:
         return RateLimitError(message, **kwargs)
     if status >= 500:
@@ -519,6 +534,11 @@ def json_body(response: httpx.Response) -> Any:
 
 def text_body(response: httpx.Response) -> str:
     return response.text.strip()
+
+
+async def async_sleep(seconds: float) -> None:
+    """``anyio.sleep``, for the async clients' polling (anyio is imported only by this module)."""
+    await anyio.sleep(seconds)
 
 
 # --------------------------------------------------------------------------- transports

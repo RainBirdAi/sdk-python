@@ -17,8 +17,10 @@ Typical use::
 
 from __future__ import annotations
 
+import math
 import os
-from collections.abc import Callable, Iterable, Iterator, Mapping
+import time
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import Any, Literal, overload
 
 import httpx
@@ -34,7 +36,13 @@ from ._http import (
     SyncTransport,
     Unset,
 )
-from .errors import NoPendingQuestionError, RainbirdConfigurationError, RainbirdError
+from .errors import (
+    NoPendingQuestionError,
+    RainbirdConfigurationError,
+    RainbirdError,
+    TestRunFailedError,
+    TestRunTimeoutError,
+)
 from .models import (
     Answer,
     CreateMapResult,
@@ -49,9 +57,15 @@ from .models import (
     QueryResponse,
     Question,
     QuestionResponse,
+    ReadmeAdded,
     ResultResponse,
     SessionFacts,
     StartResponse,
+    TestRun,
+    TestRunStarted,
+    TestSuite,
+    TestSuiteCreated,
+    ValidationResult,
     studio_url_for,
 )
 
@@ -302,10 +316,128 @@ class Rainbird:
 
         The body is ``{"rblang", "name", "description"}``; ``description`` is optional and
         sent only when given. Raises :class:`~rainbird_ai.errors.KnowledgeMapError` when
-        Rainbird rejects the RBLang (it replies HTTP 200 with an ``error`` key in that case).
+        Rainbird rejects the RBLang (it replies HTTP 200 with an ``error`` key in that case), and
+        :class:`~rainbird_ai.BadRequestError` ``NAME_ERROR`` for a name it does not accept (one
+        containing ``:``, for example).
         This endpoint is not in the public OpenAPI specification and may change.
         """
         result: CreateMapResult = self._send(_ops.create_map(name, rblang, description))
+        return result
+
+    # -- knowledge map tests, readme and validation (undocumented endpoints) -----------
+
+    def create_tests(
+        self, km_id: str, tests: Sequence[Mapping[str, Any]] | Mapping[str, Any] | TestSuite
+    ) -> TestSuiteCreated:
+        """Save a test suite on a knowledge map via ``POST /maps/{kmID}/tests``.
+
+        ``tests`` is a list in the format of Studio's Unit Tester (``[{"name": ..., "steps":
+        [...]}]``; tests created here appear there), or a :class:`~rainbird_ai.TestSuite` /
+        ``{"tests": [...]}`` body from :meth:`get_tests` to copy a suite between maps. Test
+        steps write certainty as ``cf``: a fact giving ``certainty`` raises
+        :class:`~rainbird_ai.InvalidFactError` before anything is sent, because the test runner
+        would ignore it. A map that already has tests raises
+        :class:`~rainbird_ai.ConflictError` (409); suites cannot be replaced or deleted through
+        the API. This endpoint is not in the public OpenAPI specification and may change.
+        """
+        result: TestSuiteCreated = self._send(_ops.create_tests(km_id, tests))
+        return result
+
+    def get_tests(self, km_id: str) -> TestSuite:
+        """A knowledge map's test suite via ``GET /maps/{kmID}/tests``.
+
+        Raises :class:`~rainbird_ai.NotFoundError` when the map has no tests and
+        :class:`~rainbird_ai.ConflictError` when its stored suite is in a format the API cannot
+        read. This endpoint is not in the public OpenAPI specification and may change.
+        """
+        result: TestSuite = self._send(_ops.get_tests(km_id))
+        return result
+
+    def start_test_run(self, km_id: str) -> TestRunStarted:
+        """Start running a knowledge map's tests via ``POST /maps/{kmID}/runs``.
+
+        Returns at once with ``run_id``; poll :meth:`get_test_run`, or call :meth:`run_tests`
+        to start and wait in one go. A run always tests the map's draft and covers the whole
+        suite. It is accepted even when the map has no tests (the run then fails with category
+        ``suite_load``). Like every ``POST`` it is retried on 429/503, which could start a
+        second, harmless run. This endpoint is not in the public OpenAPI specification and may
+        change.
+        """
+        result: TestRunStarted = self._send(_ops.start_test_run(km_id))
+        return result
+
+    def get_test_run(self, run_id: str) -> TestRun:
+        """Status and results of a test run via ``GET /runs/{runID}``.
+
+        :class:`~rainbird_ai.NotFoundError` means the run id is unknown or belongs to another
+        user's map, not that the run is still starting. This endpoint is not in the public
+        OpenAPI specification and may change.
+        """
+        result: TestRun = self._send(_ops.get_test_run(run_id))
+        return result
+
+    def wait_for_test_run(
+        self, run_id: str, *, poll_interval: float = 1.0, timeout: float | None = 300.0
+    ) -> TestRun:
+        """Wait for a test run to finish: :meth:`get_test_run` every ``poll_interval`` seconds.
+
+        Returns the ``complete`` :class:`~rainbird_ai.TestRun`. Tests can still have failed in
+        a complete run: check ``run.all_passed``, ``run.summary`` and ``run.failures``.
+
+        Raises :class:`~rainbird_ai.TestRunFailedError` when the run ends ``failed`` (``.run``,
+        ``.category``) and :class:`~rainbird_ai.TestRunTimeoutError`, a
+        :class:`~rainbird_ai.RainbirdTimeoutError`, when it is still unfinished after
+        ``timeout`` seconds (``None`` waits indefinitely; the server abandons a run after 15
+        minutes without progress). A timeout does not stop the run: call this again with
+        ``exc.run_id`` to keep waiting. ``timeout`` is the overall wait, not the per-request HTTP
+        timeout set on the client.
+        """
+        _check_polling(poll_interval, timeout)
+        started = time.monotonic()
+        while True:
+            run = self.get_test_run(run_id)
+            if run.is_finished:
+                return _final_run(run)
+            time.sleep(_poll_delay(run, started, poll_interval, timeout))
+
+    def run_tests(
+        self, km_id: str, *, poll_interval: float = 1.0, timeout: float | None = 300.0
+    ) -> TestRun:
+        """Run a knowledge map's tests and wait for the outcome.
+
+        :meth:`start_test_run` followed by :meth:`wait_for_test_run` (``timeout`` counts from
+        the start of the run); see there for the result and the exceptions.
+        """
+        _check_polling(poll_interval, timeout)  # before starting a run that nobody waits for
+        run_id = self.start_test_run(km_id).run_id
+        return self.wait_for_test_run(run_id, poll_interval=poll_interval, timeout=timeout)
+
+    def add_readme(self, km_id: str, readme: str) -> ReadmeAdded:
+        """Add a Markdown readme to a knowledge map's draft via ``POST /maps/{kmID}/readme``.
+
+        Only a draft without a readme is changed (blank text or Studio's cleared
+        ``<p><br></p>`` count as none); otherwise :class:`~rainbird_ai.ConflictError` (409).
+        Published versions keep their own readme, so the new one reaches users with the next
+        published version. The server rejects a readme over 100,000 characters, or one that
+        starts with ``<`` (Studio would open it as HTML), with
+        :class:`~rainbird_ai.BadRequestError`. This endpoint is not in the public OpenAPI
+        specification and may change.
+        """
+        result: ReadmeAdded = self._send(_ops.add_readme(km_id, readme))
+        return result
+
+    def validate_rblang(self, rblang: str) -> ValidationResult:
+        """Compile RBLang without saving it via ``POST /validate``.
+
+        Invalid RBLang is a normal result, not an exception: check ``result.valid``,
+        ``result.errors`` (at most one; compilation stops at the first) and
+        ``result.warnings`` (reported only for valid RBLang), each with a ``message`` and an
+        optional ``line``. The server allows up to 5 minutes for very large maps, so you may
+        need a client with a longer ``timeout``. This endpoint is newer than the others and not
+        in the public OpenAPI specification: a host whose engine predates it answers 404
+        (:class:`~rainbird_ai.NotFoundError`).
+        """
+        result: ValidationResult = self._send(_ops.validate_rblang(rblang))
         return result
 
 
@@ -625,6 +757,44 @@ def _check_evidence_mode(evidence: str) -> None:
         raise RainbirdConfigurationError(
             f"evidence must be 'none', 'root' or 'tree', got {evidence!r}"
         )
+
+
+def _seconds(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _check_polling(poll_interval: float, timeout: float | None) -> None:
+    if not _seconds(poll_interval) or poll_interval <= 0:
+        raise RainbirdConfigurationError(
+            f"poll_interval must be a positive number of seconds, got {poll_interval!r}"
+        )
+    if timeout is not None and (not _seconds(timeout) or timeout < 0):
+        raise RainbirdConfigurationError(
+            f"timeout must be None or a number of seconds >= 0, got {timeout!r}"
+        )
+
+
+def _final_run(run: TestRun) -> TestRun:
+    """A finished run, or :class:`TestRunFailedError` when its status is ``failed``."""
+    if run.is_failed:
+        detail = f": {run.error}" if run.error else ""
+        raise TestRunFailedError(f"test run {run.run_id} failed{detail}", run=run)
+    return run
+
+
+def _poll_delay(run: TestRun, started: float, poll_interval: float, timeout: float | None) -> float:
+    """Seconds to wait before polling ``run`` again; :class:`TestRunTimeoutError` once
+    ``timeout`` seconds have passed since ``started`` (a ``time.monotonic()`` reading)."""
+    if timeout is None:
+        return poll_interval
+    remaining = started + timeout - time.monotonic()
+    if remaining <= 0:
+        raise TestRunTimeoutError(
+            f"test run {run.run_id} did not finish within {timeout:g} seconds "
+            f"(status: {run.status})",
+            run=run,
+        )
+    return min(poll_interval, remaining)
 
 
 def engine_version(

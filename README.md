@@ -425,15 +425,19 @@ RainbirdError
 ├── InvalidFactError                fact payload is malformed
 ├── KnowledgeMapError               /maps accepted the request but rejected the RBLang
 ├── NaturalLanguageError            /nl/* endpoint returned an error object
+├── TestRunFailedError              a knowledge map test run ended with status "failed"
 ├── RainbirdTransportError
 │   ├── RainbirdConnectionError     DNS / TCP / TLS failure
 │   └── RainbirdTimeoutError        request timed out
+│       └── TestRunTimeoutError     gave up waiting for a test run to finish
 ├── UnexpectedResponseError         2xx body that is not JSON or not the documented shape
 └── RainbirdAPIError                non-2xx HTTP response
     ├── BadRequestError             400
     ├── AuthenticationError         401
     ├── PermissionDeniedError       403
     ├── NotFoundError               404
+    ├── ConflictError               409 (e.g. the map already has tests or a readme)
+    ├── RequestTooLargeError        413
     ├── RateLimitError              429
     └── ServerError                 5xx
 ```
@@ -476,8 +480,10 @@ or `<`, and be at most 64 characters.
 
 ## Knowledge map management
 
-> These two endpoints are not part of the public API documentation and may change. They are
-> supplied as-is; pin your SDK version if you depend on them.
+> None of the endpoints in this section are part of the public API documentation, and they may
+> change. They are supplied as-is; pin your SDK version if you depend on them.
+
+### Source and new maps
 
 ```python
 source = rb.get_map_source("KM_ID")     # GET /analysis/file/{kmID}
@@ -503,7 +509,100 @@ created.description                             # optional; sent only when you p
 When Rainbird rejects the RBLang it still answers HTTP 200 with an `error` key; the SDK turns that
 into `KnowledgeMapError` (`.errors`, `.body`). Only a truthy `err`, `errors` or `error` value
 counts as a failure (`{"error": false}`, `null`, `""`, `0`, `[]` and `{}` are success); an
-informational `message` alongside `kmID` on a success body does not.
+informational `message` alongside `kmID` on a success body does not. A map name Rainbird does not
+accept (for example one containing `:`) is rejected with HTTP 400 `NAME_ERROR` (`BadRequestError`).
+
+### Test suites and test runs
+
+A map's test suite is the one Studio's Unit Tester stores, so tests created through the SDK show
+up in Studio and the other way round. A run always tests the map's **draft** and covers the whole
+suite.
+
+```python
+tests = [
+    {
+        "name": "Fred speaks French",
+        "steps": [
+            # "expect" checks the response to the previous step, so the first one is "none".
+            {"expect": {"type": "none"},
+             "then": {"type": "Query", "subject": "Fred", "relationship": "speaks"}},
+            {"expect": {"type": "Expect Result",
+                        "results": [{"subject": "Fred", "relationship": "speaks",
+                                     "object": "French", "cf": 100}]},
+             "then": {"type": "none"}},
+        ],
+    }
+]
+rb.create_tests("KM_ID", tests)          # POST /maps/{kmID}/tests -> TestSuiteCreated
+suite = rb.get_tests("KM_ID")            # GET  /maps/{kmID}/tests -> TestSuite (.tests as stored)
+
+run = rb.run_tests("KM_ID")              # start, then poll every second for up to 300 s
+print(run.summary.passed, "of", run.summary.total, "passed")
+for result in run.failures:              # tests whose status is "fail" or "error"
+    print(result.index, result.name, result.failed_step_index, result.errors)
+```
+
+Each step's `then` is `none`, `Query` (`relationship`, optional `subject`/`object`), `Inject`
+(`inject`: a list of facts) or `Respond` (`with`: a list of answers); its `expect` is `none`,
+`Expect Question` (`prompt`, optional `subtype: "First Form"`) or `Expect Result` (`results`,
+matched in any order). The last step's `expect` is the test's expected outcome. **Certainty is
+written `cf`, not `certainty`**: the test runner ignores `certainty` and treats the fact as
+certain, so `create_tests()` raises `InvalidFactError` for a fact that uses it. The server checks
+the rest (a non-blank `name`, a `steps` list, `expect` and `then` objects in every step) and answers
+`BadRequestError`; an unknown step type only shows up when the test runs, as status `error`.
+
+A map gets a suite once: `create_tests()` on a map that has tests raises `ConflictError` (409), and
+there is no API to replace or delete a suite (edit it in Studio). `get_tests()` raises
+`NotFoundError` when the map has none. To copy a suite, pass the `TestSuite` (or its
+`{"tests": [...]}` body) to `create_tests()` for the other map.
+
+`run_tests()` is `start_test_run()`, which returns `TestRunStarted.run_id` at once, followed by
+`wait_for_test_run(run_id, poll_interval=1.0, timeout=300.0)`, which polls `get_test_run()`:
+
+- A `complete` run is returned even when tests failed: check `run.all_passed`, `run.summary`
+  (`total`, `passed`, `failed`, `errored`, `not_run`) and `run.results` / `run.failures`
+  (`TestResult`: `index`, `name`, `status`, `failed_step_index`, `errors`, `expected`, `actual`).
+- A `failed` run, one the service could not finish (for example a map without tests, category
+  `suite_load`), raises `TestRunFailedError` with `.category` and `.run`.
+- A run still unfinished after `timeout` seconds raises `TestRunTimeoutError`, a
+  `RainbirdTimeoutError`. The run carries on: call `wait_for_test_run(exc.run_id)` to keep waiting.
+  `timeout=None` waits indefinitely (the server abandons a run after 15 minutes without progress).
+  This `timeout` is the overall wait, not the client's per-request `timeout`.
+
+`get_test_run()` raises `NotFoundError` both for an unknown run id and for a run on someone else's
+map (deliberately not 403), so a 404 never means "still starting". Like every `POST`,
+`start_test_run()` is retried on 429 and 503, which could start a second, harmless run.
+
+### Readme
+
+```python
+rb.add_readme("KM_ID", "# Languages\n\nWho speaks what.")   # POST /maps/{kmID}/readme -> ReadmeAdded
+```
+
+This sets the Markdown readme of the map's **draft**, and only when the draft has none (blank text
+or Studio's cleared `<p><br></p>` count as none); otherwise it raises `ConflictError`. Published
+versions keep their own readme, so the new one reaches users with the next published version. The
+server rejects a readme over 100,000 characters, or one that starts with `<` (Studio would open it
+as HTML), with `BadRequestError`. There is no API to replace or delete a readme.
+
+### Validating RBLang
+
+> `POST /validate` is newer than the other endpoints here and was not yet deployed on any Rainbird
+> host on 27 October 2026; until it is, `validate_rblang()` raises `NotFoundError` (404).
+
+```python
+result = rb.validate_rblang(rblang)     # POST /validate -> ValidationResult; nothing is stored
+if not result.valid:
+    for error in result.errors:         # at most one: compilation stops at the first error
+        print(error.line, error.message)        # line is None when the compiler gives none
+for warning in result.warnings:         # reported only for valid RBLang
+    print(warning)                      # "line 12: ..."
+```
+
+Invalid RBLang is a normal result (HTTP 200), not an exception. The server allows up to 5 minutes
+for very large maps, so you may need `Rainbird(timeout=...)` above the default 30 seconds. A body
+over the size limit (1 MB for tests and readmes, 10 MB for `/validate`) raises
+`RequestTooLargeError` (413).
 
 ## Command line
 
@@ -527,6 +626,12 @@ rainbird interact "Tom lives in Germany. What does Tom speak?"
 rainbird interactions --session SID --format csv
 rainbird map get KM_ID --out map.rbl                          # undocumented endpoint
 rainbird map create --name "My map" --file map.rbl --description "Claims triage"   # --description is optional
+rainbird map validate --file map.rbl                          # exit 4 if the RBLang is invalid
+rainbird map add-readme KM_ID --file README.md
+rainbird map get-tests KM_ID --out tests.json                 # list the suite, or save it as JSON
+rainbird map create-tests KM_ID --file tests.json             # a JSON list, or get-tests --json output
+rainbird map run-tests KM_ID                                  # run on the draft and wait; exit 4 if a test fails
+rainbird map test-run RUN_ID                                  # a run started with run-tests --no-wait
 ```
 
 Further commands: `respond`, `undo`, `explain`, `facts`, `session`; run `rainbird COMMAND --help`.
@@ -552,15 +657,22 @@ interactive questions and prompts go to stderr, so stdout is always a single JSO
 spaces under the fact it supports, inline conditions as `- ...` lines, facts referenced only from
 expression functions beneath their expression, and anything fetched but not reachable from the
 root appended at the end.
+`map run-tests` prints `rainbird: started test run RUN_ID` to stderr, waits (`--poll-interval`,
+default 1 second; `--max-wait`, default 300 seconds) and prints one summary line plus a line per
+failing test; `--json` prints the run instead, and `--no-wait` only the run id. `map create-tests`
+checks the file (valid JSON, a non-empty list of tests, `cf` rather than `certainty`) before any
+request and exits 2 when it is wrong.
 
 Exit codes: `0` success; `1` API, SDK or file error (message on stderr; this includes `respond`
-answers that are valid JSON but not answer-shaped, which are rejected before any request); `2`
-usage error (also an invalid `--fact`, such as a non-numeric or out-of-range certainty, malformed
-or wrongly shaped `--file` JSON, or `respond` answers that are not valid JSON); `3` a question is
-still pending and no input is available (`--no-input`, non-interactive stdin or Ctrl-D): the
-question is printed to stdout (with `--json`, the question response plus `"session_id"`) and
-`rainbird: session SID is waiting for an answer; resume with --session SID` to stderr; `130`
-interrupted.
+answers that are valid JSON but not answer-shaped, which are rejected before any request, and a
+test run that ended `failed`); `2` usage error (also an invalid `--fact`, such as a non-numeric or
+out-of-range certainty, malformed or wrongly shaped `--file` JSON, or `respond` answers that are
+not valid JSON); `3` a question is still pending and no input is available (`--no-input`,
+non-interactive stdin or Ctrl-D): the question is printed to stdout (with `--json`, the question
+response plus `"session_id"`) and `rainbird: session SID is waiting for an answer; resume with
+--session SID` to stderr; `3` is also used when a test run has not finished (`map test-run`, or
+`map run-tests` after `--max-wait`); `4` a check failed: `map run-tests` or `map test-run` found
+failing tests, or `map validate` found an error in the RBLang; `130` interrupted.
 
 ## Testing your own code
 

@@ -8,7 +8,8 @@ parsing live here exactly once.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import json
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import httpx
@@ -24,6 +25,7 @@ from ._http import (
     text_body,
 )
 from .errors import (
+    InvalidFactError,
     KnowledgeMapError,
     NaturalLanguageError,
     RainbirdConfigurationError,
@@ -39,12 +41,19 @@ from .models import (
     KnowledgeMapSource,
     KnowledgeMapVersion,
     QueryResponse,
+    ReadmeAdded,
     SessionFacts,
     StartResponse,
+    TestRun,
+    TestRunStarted,
+    TestSuite,
+    TestSuiteCreated,
+    ValidationResult,
     parse_query_response,
 )
 
-_NL_HEADERS = {"Version": NL_VERSION}
+# /nl/*, /maps and the map-management endpoints (/maps/{kmID}/..., /runs, /validate).
+_V1_HEADERS = {"Version": NL_VERSION}
 
 
 def _decision(response: httpx.Response) -> QueryResponse:
@@ -271,7 +280,7 @@ def interact(session_id: str, user_prompt: str) -> Request[InteractResponse]:
         method="POST",
         path="nl/interact",
         json=body,
-        headers=_NL_HEADERS,
+        headers=_V1_HEADERS,
         parse=lambda r: InteractResponse.from_dict(_object(r)),
     )
 
@@ -303,7 +312,7 @@ def explain(
             )
         return result
 
-    return Request(method="POST", path="nl/explain", json=body, headers=_NL_HEADERS, parse=parse)
+    return Request(method="POST", path="nl/explain", json=body, headers=_V1_HEADERS, parse=parse)
 
 
 # --------------------------------------------------------------------------- platform
@@ -405,4 +414,147 @@ def create_map(name: str, rblang: str, description: str | None = None) -> Reques
     body: dict[str, Any] = {"rblang": clean_rblang, "name": clean_name}
     if description is not None:
         body["description"] = description
-    return Request(method="POST", path="maps", json=body, headers=_NL_HEADERS, parse=parse)
+    return Request(method="POST", path="maps", json=body, headers=_V1_HEADERS, parse=parse)
+
+
+# ------------------------------------- map tests, readme and validation (not in the OpenAPI spec)
+
+# Lists of facts inside a test step, keyed by (step part, field): Inject, Respond, Expect Result.
+_SUITE_FACT_LISTS = (("then", "inject"), ("then", "with"), ("expect", "results"))
+
+
+def _missing(data: dict[str, Any], key: str, response: httpx.Response) -> UnexpectedResponseError:
+    errors = extract_error_messages(data)
+    return UnexpectedResponseError(
+        "; ".join(errors) if errors else f"response did not include {key!r}",
+        body=data,
+        status_code=response.status_code,
+    )
+
+
+def suite_payload(tests: Any) -> list[Any]:
+    """Check a test suite for ``POST /maps/{kmID}/tests`` and return it as a JSON-ready list.
+
+    Accepts a list of test objects, a :class:`~rainbird_ai.TestSuite` or a ``{"tests": [...]}``
+    body (what ``get_tests()`` returns), so a suite can be copied between maps. Only the outer
+    shape is checked here, leaving the rest to the server, plus one mistake the server cannot
+    see: a fact giving ``certainty`` instead of ``cf``, which the test runner ignores (it then
+    uses certainty 100) and so is rejected with :class:`~rainbird_ai.InvalidFactError`.
+    """
+    if isinstance(tests, TestSuite):
+        tests = tests.tests
+    elif isinstance(tests, Mapping) and "tests" in tests:
+        tests = tests["tests"]
+    if not isinstance(tests, (list, tuple)) or not tests:
+        raise RainbirdConfigurationError("tests must be a non-empty list of test objects")
+    suite: list[Any] = []
+    for i, test in enumerate(tests):
+        if not isinstance(test, Mapping):
+            raise RainbirdConfigurationError(
+                f"tests[{i}] must be an object with 'name' and 'steps', got {type(test).__name__}"
+            )
+        steps = test.get("steps")
+        for j, step in enumerate(steps if isinstance(steps, list) else []):
+            for part, key in _SUITE_FACT_LISTS:
+                section = step.get(part) if isinstance(step, Mapping) else None
+                facts = section.get(key) if isinstance(section, Mapping) else None
+                for k, fact in enumerate(facts if isinstance(facts, list) else []):
+                    if isinstance(fact, Mapping) and "certainty" in fact and "cf" not in fact:
+                        raise InvalidFactError(
+                            f"tests[{i}].steps[{j}].{part}.{key}[{k}] sets 'certainty'; test "
+                            "suites write it as 'cf' (the test runner ignores 'certainty' and "
+                            "uses 100)"
+                        )
+        suite.append(dict(test))
+    try:
+        json.dumps(suite, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise RainbirdConfigurationError(f"tests must be JSON-serialisable: {exc}") from exc
+    return suite
+
+
+def create_tests(km_id: str, tests: Any) -> Request[TestSuiteCreated]:
+    """``POST /maps/{kmID}/tests``: save a test suite on a map that has none (409 otherwise)."""
+    segment = path_segment(km_id, "km_id")
+    body = {"tests": suite_payload(tests)}
+    return Request(
+        method="POST",
+        path=f"maps/{segment}/tests",
+        json=body,
+        headers=_V1_HEADERS,
+        parse=lambda r: TestSuiteCreated.from_dict(_object(r), km_id=str(km_id).strip()),
+    )
+
+
+def get_tests(km_id: str) -> Request[TestSuite]:
+    """``GET /maps/{kmID}/tests``: the stored suite (404 when the map has none)."""
+    segment = path_segment(km_id, "km_id")
+
+    def parse(response: httpx.Response) -> TestSuite:
+        data = _object(response)
+        if not isinstance(data.get("tests"), list):
+            raise _missing(data, "tests", response)
+        return TestSuite.from_dict(data, km_id=str(km_id).strip())
+
+    return Request(method="GET", path=f"maps/{segment}/tests", headers=_V1_HEADERS, parse=parse)
+
+
+def start_test_run(km_id: str) -> Request[TestRunStarted]:
+    """``POST /maps/{kmID}/runs`` (no body): start a run of the whole suite on the draft (202)."""
+    segment = path_segment(km_id, "km_id")
+
+    def parse(response: httpx.Response) -> TestRunStarted:
+        data = _object(response)
+        try:
+            return TestRunStarted.from_dict(data, km_id=str(km_id).strip())
+        except ValueError as exc:
+            raise _missing(data, "runID", response) from exc
+
+    return Request(method="POST", path=f"maps/{segment}/runs", headers=_V1_HEADERS, parse=parse)
+
+
+def get_test_run(run_id: str) -> Request[TestRun]:
+    """``GET /runs/{runID}``: status and results (404 for an unknown run or another user's)."""
+    segment = path_segment(run_id, "run_id")
+
+    def parse(response: httpx.Response) -> TestRun:
+        data = _object(response)
+        if data.get("status") is None:
+            raise _missing(data, "status", response)
+        return TestRun.from_dict(data, run_id=str(run_id).strip())
+
+    return Request(method="GET", path=f"runs/{segment}", headers=_V1_HEADERS, parse=parse)
+
+
+def add_readme(km_id: str, readme: str) -> Request[ReadmeAdded]:
+    """``POST /maps/{kmID}/readme``: set the draft's Markdown readme if it has none (409 otherwise).
+
+    Only blank text is rejected here; the server enforces the rest (at most 100,000
+    characters, must not start with ``<``).
+    """
+    segment = path_segment(km_id, "km_id")
+    body = {"readme": _require(readme, "readme")}
+    return Request(
+        method="POST",
+        path=f"maps/{segment}/readme",
+        json=body,
+        headers=_V1_HEADERS,
+        parse=lambda r: ReadmeAdded.from_dict(_object(r), km_id=str(km_id).strip()),
+    )
+
+
+def validate_rblang(rblang: str) -> Request[ValidationResult]:
+    """``POST /validate``: compile RBLang without storing it.
+
+    Invalid RBLang is still HTTP 200 with ``"valid": false``, so the parser only requires
+    the ``valid`` key and leaves the verdict to the caller.
+    """
+    body = {"rblang": _require(rblang, "rblang")}
+
+    def parse(response: httpx.Response) -> ValidationResult:
+        data = _object(response)
+        if data.get("valid") is None:
+            raise _missing(data, "valid", response)
+        return ValidationResult.from_dict(data)
+
+    return Request(method="POST", path="validate", json=body, headers=_V1_HEADERS, parse=parse)

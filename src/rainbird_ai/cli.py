@@ -12,13 +12,19 @@ Examples::
     rainbird interact --km-id KM "Can Ben claim?"
     rainbird map get KM_ID --out map.rbl
     rainbird map create --name "My map" --file map.rbl
+    rainbird map validate --file map.rbl
+    rainbird map create-tests KM_ID --file tests.json
+    rainbird map run-tests KM_ID
 
 Global options (``--api-key``, ``--base-url``, ``--json``, ...) may be given before
 or after the subcommand.
 
 Exit codes: 0 success; 1 API, SDK or file error (message on stderr); 2 usage error;
 3 a question is still pending and no input is available (``--no-input``,
-non-interactive stdin or Ctrl-D); 130 interrupted.
+non-interactive stdin or Ctrl-D), or a test run has not finished (``map test-run``,
+``map run-tests`` after ``--max-wait``); 4 a check failed (``map run-tests`` or
+``map test-run`` found failing tests, ``map validate`` found an RBLang error);
+130 interrupted.
 """
 
 from __future__ import annotations
@@ -34,9 +40,18 @@ from typing import Any, NoReturn, TextIO
 
 from ._answers import SKIP, normalize_facts
 from ._http import ENV_API_KEY
+from ._ops import suite_payload
 from ._version import __version__
 from .client import Rainbird, Session, engine_version
-from .errors import BadRequestError, InvalidAnswerError, InvalidFactError, RainbirdError
+from .errors import (
+    BadRequestError,
+    InvalidAnswerError,
+    InvalidFactError,
+    RainbirdConfigurationError,
+    RainbirdError,
+    TestRunFailedError,
+    TestRunTimeoutError,
+)
 from .models import (
     Condition,
     Decision,
@@ -47,12 +62,14 @@ from .models import (
     Question,
     QuestionResponse,
     ResultResponse,
+    TestRun,
 )
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_USAGE = 2
 EXIT_PENDING = 3
+EXIT_FAILED = 4
 _SKIP_TOKENS = {"?", "skip", "SKIP"}
 
 
@@ -570,18 +587,158 @@ def cmd_map_get(args: argparse.Namespace) -> None:
         print(source.rblang)
 
 
+def _read_text(path: str) -> str:
+    """The contents of ``path``, or of stdin when ``path`` is ``-``."""
+    if path == "-":
+        return sys.stdin.read()
+    with open(path, encoding="utf-8") as fh:
+        return fh.read()
+
+
 def cmd_map_create(args: argparse.Namespace) -> None:
-    if args.file == "-":
-        rblang = sys.stdin.read()
-    else:
-        with open(args.file, encoding="utf-8") as fh:
-            rblang = fh.read()
+    rblang = _read_text(args.file)
     with _client(args) as rb:
         result = rb.create_map(args.name, rblang, args.description)
     if args.json:
         _emit_json(result)
     else:
         print(result.km_id)
+
+
+def cmd_map_validate(args: argparse.Namespace) -> None:
+    rblang = _read_text(args.file)
+    with _client(args) as rb:
+        result = rb.validate_rblang(rblang)
+    if args.json:
+        _emit_json(result)
+    else:
+        print("valid" if result.valid else "invalid")
+        for message in result.errors:
+            print(f"  error    {message}")
+        for message in result.warnings:
+            print(f"  warning  {message}")
+    if not result.valid:
+        raise SystemExit(EXIT_FAILED)
+
+
+def cmd_map_add_readme(args: argparse.Namespace) -> None:
+    readme = _read_text(args.file)
+    with _client(args) as rb:
+        result = rb.add_readme(args.km_id, readme)
+    if args.json:
+        _emit_json(result)
+    else:
+        print(f"added a readme to the draft of {result.km_id}")
+
+
+def cmd_map_get_tests(args: argparse.Namespace) -> None:
+    with _client(args) as rb:
+        suite = rb.get_tests(args.km_id)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(suite.tests, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        if not args.json:
+            print(f"wrote {len(suite.tests)} test(s) to {args.out}")
+    if args.json:
+        _emit_json(suite)
+    elif not args.out:
+        print(f"{suite.test_count} test(s) on {suite.km_id}")
+        for index, test in enumerate(suite.tests):
+            entry = test if isinstance(test, dict) else {}
+            steps = entry.get("steps")
+            count = len(steps) if isinstance(steps, list) else 0
+            print(f"  [{index}] {entry.get('name') or '?'} ({count} step(s))")
+
+
+def _load_suite(path: str) -> list[Any]:
+    """Read and check a test suite file before any network call (usage errors exit 2)."""
+    text = _read_text(path)
+    try:
+        loaded = json.loads(text)
+    except ValueError as exc:
+        _die(f"{path}: invalid JSON: {exc}", EXIT_USAGE)
+    try:
+        return suite_payload(loaded)
+    except (RainbirdConfigurationError, InvalidFactError) as exc:
+        _die(f"{path}: {exc}", EXIT_USAGE)
+
+
+def cmd_map_create_tests(args: argparse.Namespace) -> None:
+    tests = _load_suite(args.file)
+    with _client(args) as rb:
+        result = rb.create_tests(args.km_id, tests)
+    if args.json:
+        _emit_json(result)
+    else:
+        count = result.test_count if result.test_count is not None else len(tests)
+        print(f"created {count} test(s) on {result.km_id}")
+
+
+def _print_test_run(run: TestRun) -> None:
+    summary = run.summary
+    print(
+        f"run {run.run_id} {run.status}: {summary.passed} of {summary.total} passed "
+        f"({summary.failed} failed, {summary.errored} errored, {summary.not_run} not run)"
+    )
+    for result in run.failures:
+        index = result.index if result.index is not None else "?"
+        failed_at = result.failed_step_index
+        step = f" at step {failed_at}" if failed_at is not None else ""
+        detail = ": " + "; ".join(result.errors) if result.errors else ""
+        print(f"  {result.status!s:<6} [{index}] {result.name}{step}{detail}")
+    if run.error is not None:
+        print(f"  error: {run.error}")
+
+
+def _report_test_run(run: TestRun, args: argparse.Namespace) -> None:
+    """Print a run; exit 1 if it failed, 3 if it is unfinished, 4 if any test failed."""
+    if args.json:
+        _emit_json(run)
+    else:
+        _print_test_run(run)
+    if run.is_failed:
+        _die(f"test run {run.run_id} failed" + (f": {run.error}" if run.error else ""))
+    if not run.is_finished:
+        print(
+            f"rainbird: test run {run.run_id} is still {run.status}; check it with "
+            f"rainbird map test-run {run.run_id}",
+            file=sys.stderr,
+        )
+        raise SystemExit(EXIT_PENDING)
+    if not run.all_passed:
+        raise SystemExit(EXIT_FAILED)
+
+
+def cmd_map_run_tests(args: argparse.Namespace) -> None:
+    if args.poll_interval <= 0:
+        _die("--poll-interval must be a positive number of seconds", EXIT_USAGE)
+    if args.max_wait < 0:
+        _die("--max-wait must not be negative", EXIT_USAGE)
+    with _client(args) as rb:
+        started = rb.start_test_run(args.km_id)
+        if args.no_wait:
+            if args.json:
+                _emit_json(started)
+            else:
+                print(started.run_id)
+            return
+        print(f"rainbird: started test run {started.run_id}", file=sys.stderr)
+        try:
+            run = rb.wait_for_test_run(
+                started.run_id, poll_interval=args.poll_interval, timeout=args.max_wait
+            )
+        except (TestRunFailedError, TestRunTimeoutError) as exc:
+            if exc.run is None:
+                raise
+            run = exc.run
+    _report_test_run(run, args)
+
+
+def cmd_map_test_run(args: argparse.Namespace) -> None:
+    with _client(args) as rb:
+        run = rb.get_test_run(args.run_id)
+    _report_test_run(run, args)
 
 
 # --------------------------------------------------------------------------- parser
@@ -758,19 +915,66 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - one statement 
     p.add_argument("--format", choices=["json", "csv"], default="json")
     p.set_defaults(func=cmd_interactions)
 
-    p = sub.add_parser("map", help="knowledge map source (undocumented endpoints)")
+    p = sub.add_parser(
+        "map",
+        help="knowledge maps: source, readme, tests, RBLang validation (undocumented endpoints)",
+    )
     msub = p.add_subparsers(dest="map_command", required=True, metavar="ACTION")
-    mp = msub.add_parser("get", help="download RBLang for a knowledge map", parents=[common])
+
+    def map_command(name: str, help_text: str) -> argparse.ArgumentParser:
+        return msub.add_parser(name, help=help_text, parents=[common])
+
+    mp = map_command("get", "download RBLang for a knowledge map")
     mp.add_argument("km_id")
     mp.add_argument("--out", help="write RBLang to this file")
     mp.set_defaults(func=cmd_map_get)
-    mp = msub.add_parser(
-        "create", help="create a knowledge map from an RBLang file", parents=[common]
-    )
+    mp = map_command("create", "create a knowledge map from an RBLang file")
     mp.add_argument("--name", required=True)
     mp.add_argument("--description", help="optional description stored with the map")
     mp.add_argument("--file", required=True, help="RBLang XML file, or '-' for stdin")
     mp.set_defaults(func=cmd_map_create)
+    mp = map_command("validate", "check RBLang without saving it (exit 4 if invalid)")
+    mp.add_argument("--file", required=True, help="RBLang XML file, or '-' for stdin")
+    mp.set_defaults(func=cmd_map_validate)
+    mp = map_command("add-readme", "add a Markdown readme to a map's draft (if it has none)")
+    mp.add_argument("km_id")
+    mp.add_argument("--file", required=True, help="Markdown file, or '-' for stdin")
+    mp.set_defaults(func=cmd_map_add_readme)
+    mp = map_command("get-tests", "list a map's test suite (Studio's Unit Tester tests)")
+    mp.add_argument("km_id")
+    mp.add_argument("--out", help="write the suite to this file as JSON (for create-tests)")
+    mp.set_defaults(func=cmd_map_get_tests)
+    mp = map_command("create-tests", "save a test suite on a map that has none")
+    mp.add_argument("km_id")
+    mp.add_argument(
+        "--file",
+        required=True,
+        help="JSON list of tests or a get-tests --json body, or '-' for stdin",
+    )
+    mp.set_defaults(func=cmd_map_create_tests)
+    mp = map_command(
+        "run-tests", "run a map's tests on its draft and wait (exit 4 if a test fails)"
+    )
+    mp.add_argument("km_id")
+    mp.add_argument("--no-wait", action="store_true", help="print the run id and exit")
+    mp.add_argument(
+        "--poll-interval",
+        type=float,
+        default=1.0,
+        metavar="SECONDS",
+        help="time between status checks (default: 1)",
+    )
+    mp.add_argument(
+        "--max-wait",
+        type=float,
+        default=300.0,
+        metavar="SECONDS",
+        help="stop waiting after this long and exit 3; the run carries on (default: 300)",
+    )
+    mp.set_defaults(func=cmd_map_run_tests)
+    mp = map_command("test-run", "status and results of a test run")
+    mp.add_argument("run_id")
+    mp.set_defaults(func=cmd_map_test_run)
 
     return parser
 

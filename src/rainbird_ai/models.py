@@ -50,12 +50,24 @@ __all__ = [
     "Question",
     "QuestionForm",
     "QuestionResponse",
+    "ReadmeAdded",
     "ResultItem",
     "ResultResponse",
     "Rule",
     "SessionFact",
     "SessionFacts",
     "StartResponse",
+    "TestResult",
+    "TestResultStatus",
+    "TestRun",
+    "TestRunError",
+    "TestRunStarted",
+    "TestRunStatus",
+    "TestRunSummary",
+    "TestSuite",
+    "TestSuiteCreated",
+    "ValidationMessage",
+    "ValidationResult",
     "parse_query_response",
     "studio_url_for",
 ]
@@ -1171,6 +1183,371 @@ class CreateMapResult(_RawMixin):
             name=_get(data, "name", default=name),
             id=numeric_id,
             description=_get(data, "description", default=description),
+            raw=data,
+        )
+
+
+# ------------------------------------------- knowledge map tests, readme, validation (undocumented)
+
+
+def _as_int(value: Any) -> int | None:
+    number = _as_number(value)
+    if number is None or (isinstance(number, float) and not number.is_integer()):
+        return None
+    return int(number)
+
+
+class TestRunStatus(str, enum.Enum):
+    """Status of a knowledge map test run (:attr:`TestRun.status`).
+
+    ``COMPLETE`` and ``FAILED`` are final. ``COMPLETE`` means every test ran (some may still
+    have failed); ``FAILED`` means the service could not finish the run (:attr:`TestRun.error`).
+    """
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    UNKNOWN = "unknown"
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+    @classmethod
+    def parse(cls, value: Any) -> TestRunStatus | str:
+        """The member for ``value``; ``None`` is ``UNKNOWN``, an unrecognised string is kept."""
+        if value is None:
+            return cls.UNKNOWN
+        try:
+            return cls(str(value))
+        except ValueError:
+            return str(value)
+
+
+class TestResultStatus(str, enum.Enum):
+    """Outcome of one test in a run (:attr:`TestResult.status`)."""
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    PASS = "pass"
+    FAIL = "fail"
+    ERROR = "error"
+    NOT_RUN = "notRun"
+    UNKNOWN = "unknown"
+
+    def __str__(self) -> str:
+        return str(self.value)
+
+    @classmethod
+    def parse(cls, value: Any) -> TestResultStatus | str:
+        """The member for ``value``; ``None`` is ``UNKNOWN``, an unrecognised string is kept."""
+        if value is None:
+            return cls.UNKNOWN
+        try:
+            return cls(str(value))
+        except ValueError:
+            return str(value)
+
+
+@dataclass(frozen=True)
+class TestSuite(_RawMixin):
+    """A knowledge map's test suite, as stored by Studio's Unit Tester (``GET /maps/{kmID}/tests``).
+
+    ``tests`` is the suite exactly as stored: a list of ``{"name", "steps"}`` objects, which may
+    carry Studio-only fields such as ``lastRun``. Pass it (or this object) to ``create_tests()``
+    to copy the suite to another map. This endpoint is not part of the public OpenAPI
+    specification and may change.
+    """
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    km_id: str
+    test_count: int
+    tests: list[Any] = field(default_factory=list)
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: JSON, *, km_id: str = "") -> TestSuite:
+        tests = list(_as_list(_get(data, "tests")))
+        count = _as_int(_get(data, "testCount"))
+        return cls(
+            km_id=str(_get(data, "kmID", default=km_id) or km_id),
+            test_count=count if count is not None else len(tests),
+            tests=tests,
+            raw=data,
+        )
+
+    def __len__(self) -> int:
+        return len(self.tests)
+
+    def __iter__(self) -> Iterator[Any]:
+        return iter(self.tests)
+
+
+@dataclass(frozen=True)
+class TestSuiteCreated(_RawMixin):
+    """Result of ``POST /maps/{kmID}/tests`` (``create_tests()``): the suite was saved.
+
+    This endpoint is not part of the public OpenAPI specification and may change.
+    """
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    km_id: str
+    test_count: int | None
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: JSON, *, km_id: str = "") -> TestSuiteCreated:
+        return cls(
+            km_id=str(_get(data, "kmID", default=km_id) or km_id),
+            test_count=_as_int(_get(data, "testCount")),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class TestRunStarted(_RawMixin):
+    """Result of ``POST /maps/{kmID}/runs`` (``start_test_run()``): the run was queued.
+
+    Poll it with ``get_test_run(run_id)``. ``km_id`` is the map the run was started on (from
+    the request). This endpoint is not part of the public OpenAPI specification and may change.
+    """
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    run_id: str
+    km_id: str | None = None
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: JSON, *, km_id: str | None = None) -> TestRunStarted:
+        run_id = _get(data, "runID", "id")
+        if run_id is None or not str(run_id).strip():
+            raise ValueError("start test run response did not include a run id")
+        return cls(run_id=str(run_id), km_id=km_id, raw=data)
+
+
+@dataclass(frozen=True)
+class TestRunSummary(_RawMixin):
+    """Counts for a test run (``summary``); a missing count is 0."""
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    total: int = 0
+    passed: int = 0
+    failed: int = 0
+    errored: int = 0
+    not_run: int = 0
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: JSON) -> TestRunSummary:
+        def count(name: str) -> int:
+            return _as_int(_get(data, name)) or 0
+
+        return cls(
+            total=count("total"),
+            passed=count("passed"),
+            failed=count("failed"),
+            errored=count("errored"),
+            not_run=count("notRun"),
+            raw=data,
+        )
+
+
+@dataclass(frozen=True)
+class TestResult(_RawMixin):
+    """Outcome of one test in a run (``results[]``).
+
+    ``index`` is the test's position in the suite. ``expected`` is the step expectation that
+    was checked last (the test's outcome for a passing test, the mismatch for a failing one) and
+    ``actual`` the engine's response to it, both free JSON; the API sends them for passing tests
+    too. ``failed_step_index`` and ``errors`` are filled only when the test did not pass.
+    """
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    index: int | None
+    name: str
+    status: TestResultStatus | str
+    failed_step_index: int | None = None
+    errors: list[str] = field(default_factory=list)
+    expected: Any = None
+    actual: Any = None
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: JSON) -> TestResult:
+        return cls(
+            index=_as_int(_get(data, "index")),
+            name=str(_get(data, "name", default="") or ""),
+            status=TestResultStatus.parse(_get(data, "status")),
+            failed_step_index=_as_int(_get(data, "failedStepIndex")),
+            errors=[str(e) for e in _as_list(_get(data, "errors")) if e is not None],
+            expected=_get(data, "expected"),
+            actual=_get(data, "actual"),
+            raw=data,
+        )
+
+    @property
+    def passed(self) -> bool:
+        """``True`` when the test's status is ``pass``."""
+        return self.status is TestResultStatus.PASS
+
+    def __str__(self) -> str:
+        return f"[{_part(self.index)}] {self.name}: {self.status}"
+
+
+@dataclass(frozen=True)
+class TestRunError(_RawMixin):
+    """Why a test run failed (``error`` on a run whose status is ``failed``).
+
+    ``category`` is ``unsupported_version``, ``suite_load``, ``engine``, ``invalid_selection``,
+    ``timeout``, ``store``, ``panic``, ``abandoned`` or another value added later.
+    """
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    category: str | None
+    message: str | None
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: JSON) -> TestRunError:
+        category, message = _get(data, "category"), _get(data, "message")
+        return cls(
+            category=None if category is None else str(category),
+            message=None if message is None else str(message),
+            raw=data,
+        )
+
+    def __str__(self) -> str:
+        if self.category and self.message:
+            return f"{self.message} ({self.category})"
+        return self.message or self.category or "the test run failed"
+
+
+@dataclass(frozen=True)
+class TestRun(_RawMixin):
+    """Status and results of a knowledge map test run (``GET /runs/{runID}``).
+
+    A run tests the map's draft and covers every test in its suite. While ``status`` is
+    ``pending`` or ``running``, ``results`` may be partly filled in. ``complete`` means every
+    test ran; check :attr:`all_passed` or :attr:`summary` for the outcome. ``failed`` means the
+    service could not finish the run; :attr:`error` says why. This endpoint is not part of
+    the public OpenAPI specification and may change.
+    """
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    run_id: str
+    status: TestRunStatus | str
+    summary: TestRunSummary = field(default_factory=TestRunSummary)
+    results: list[TestResult] = field(default_factory=list)
+    error: TestRunError | None = None
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: JSON, *, run_id: str = "") -> TestRun:
+        error = _get(data, "error")
+        return cls(
+            run_id=str(_get(data, "runID", "id", default=run_id) or run_id),
+            status=TestRunStatus.parse(_get(data, "status")),
+            summary=TestRunSummary.from_dict(_as_dict(_get(data, "summary"))),
+            results=[TestResult.from_dict(_as_dict(r)) for r in _as_list(_get(data, "results"))],
+            error=TestRunError.from_dict(error) if isinstance(error, dict) else None,
+            raw=data,
+        )
+
+    @property
+    def is_finished(self) -> bool:
+        """``True`` once the run is ``complete`` or ``failed`` (it will not change again)."""
+        return self.status in (TestRunStatus.COMPLETE, TestRunStatus.FAILED)
+
+    @property
+    def is_complete(self) -> bool:
+        """``True`` when every test ran (individual tests may still have failed)."""
+        return self.status is TestRunStatus.COMPLETE
+
+    @property
+    def is_failed(self) -> bool:
+        """``True`` when the service could not finish the run (see :attr:`error`)."""
+        return self.status is TestRunStatus.FAILED
+
+    @property
+    def all_passed(self) -> bool:
+        """``True`` when the run is complete and every test in it passed."""
+        summary = self.summary
+        return self.is_complete and summary.total > 0 and summary.passed == summary.total
+
+    @property
+    def failures(self) -> list[TestResult]:
+        """Results whose status is ``fail`` or ``error``."""
+        bad = (TestResultStatus.FAIL, TestResultStatus.ERROR)
+        return [r for r in self.results if r.status in bad]
+
+
+@dataclass(frozen=True)
+class ReadmeAdded(_RawMixin):
+    """Result of ``POST /maps/{kmID}/readme`` (``add_readme()``): the draft now has a readme.
+
+    This endpoint is not part of the public OpenAPI specification and may change.
+    """
+
+    km_id: str
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: JSON, *, km_id: str = "") -> ReadmeAdded:
+        return cls(km_id=str(_get(data, "kmID", default=km_id) or km_id), raw=data)
+
+
+@dataclass(frozen=True)
+class ValidationMessage(_RawMixin):
+    """One compiler error or warning from ``POST /validate``; ``line`` is ``None`` when the
+    compiler did not report one."""
+
+    message: str
+    line: int | None = None
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Any) -> ValidationMessage:
+        if not isinstance(data, dict):
+            return cls(message=str(data), raw={"message": data})
+        return cls(
+            message=str(_get(data, "message", "msg", "error", default="") or ""),
+            line=_as_int(_get(data, "line")),
+            raw=data,
+        )
+
+    def __str__(self) -> str:
+        return f"line {self.line}: {self.message}" if self.line is not None else self.message
+
+
+@dataclass(frozen=True)
+class ValidationResult(_RawMixin):
+    """Result of ``POST /validate`` (``validate_rblang()``): RBLang compiled, nothing stored.
+
+    Invalid RBLang is a normal result (HTTP 200), so check :attr:`valid`. Compilation stops at
+    the first error, so ``errors`` holds at most one entry, and warnings are reported only for
+    valid RBLang. This endpoint is not part of the public OpenAPI specification and may change.
+    """
+
+    valid: bool
+    errors: list[ValidationMessage] = field(default_factory=list)
+    warnings: list[ValidationMessage] = field(default_factory=list)
+    raw: JSON = field(repr=False, default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: JSON) -> ValidationResult:
+        return cls(
+            valid=_as_bool(_get(data, "valid")),
+            errors=[ValidationMessage.from_dict(e) for e in _as_list(_get(data, "errors"))],
+            warnings=[ValidationMessage.from_dict(w) for w in _as_list(_get(data, "warnings"))],
             raw=data,
         )
 

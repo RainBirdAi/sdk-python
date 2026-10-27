@@ -38,7 +38,7 @@ Console script: `rainbird --help` (`rainbird query -r speaks -s Tom --answers Ge
 CLI notes for scripting:
 
 - Global options `--api-key --base-url --engine --evidence-key --interaction-key --timeout --json`
-  are accepted before or after the subcommand (including `map get` / `map create`).
+  are accepted before or after the subcommand (including every `map` action).
 - `rainbird version` needs no API key: without `--api-key`/`RAINBIRD_API_KEY` it calls
   `engine_version()`.
 - `--answers`: `?` skips, `a,b` answers a plural question, `value@80` sets the certainty (`@` counts
@@ -58,7 +58,10 @@ CLI notes for scripting:
   any network call); `3` a
   question is still pending and no input is available (`--no-input`, non-tty stdin or Ctrl-D): the
   question goes to stdout (text mode) or `{"session_id": ..., ...questionResponse}` (`--json`), then
-  `rainbird: session <SID> is waiting for an answer; resume with --session <SID>` to stderr; `130`
+  `rainbird: session <SID> is waiting for an answer; resume with --session <SID>` to stderr; `3`
+  also means a test run has not finished (`map test-run`, `map run-tests` after `--max-wait`); `4`
+  a check failed (`map run-tests` / `map test-run` found failing tests, `map validate` found an
+  RBLang error); a test run that ended `failed` exits 1; `130`
   interrupted. Interactive rejections re-prompt and print `  ! <message>` to stderr, but only for
   answer-level problems (`InvalidAnswerError`, `InvalidFactError`, `BadRequestError`); a 401, a 404
   (session not found), a network error or any other failure exits 1 immediately.
@@ -117,7 +120,8 @@ Hosts (`rainbird_ai.Environment`, a `str` enum usable directly as `base_url`):
 | `Environment.ENTERPRISE_SOUTH_AMERICA` | `https://sa-enterprise-api.rainbird.ai` | `https://sa-enterprise.rainbird.ai` |
 | Private deployment      | `https://<client>-api.rainbird.ai`      | `https://<client>.rainbird.ai`       |
 
-The `Version: v1` header required by `/nl/*` and `/maps` is added by the SDK. Auth headers are
+The `Version: v1` header required by `/nl/*`, `/maps` and the other map endpoints (section 12) is
+added by the SDK. Auth headers are
 added by the SDK. `studio_url_for(api_url)` derives the Studio host from any API host.
 
 ## 5. Public API reference (sync)
@@ -139,6 +143,9 @@ synchronous; `iter_evidence_tree()` returns an `AsyncIterator` (`async for`).
 - `evidence_url(session_id, fact_id, *, studio_url=None) -> str` - `{studio}/evidence?id={factID}&api={base_url}&sid={sid}` link to the Studio evidence UI.
 - `get_map_source(km_id) -> KnowledgeMapSource` - UNDOCUMENTED `GET /analysis/file/{kmID}` (section 12).
 - `create_map(name, rblang, description=None) -> CreateMapResult` - UNDOCUMENTED `POST /maps` (section 12).
+- `create_tests(km_id, tests) -> TestSuiteCreated`, `get_tests(km_id) -> TestSuite` - UNDOCUMENTED `POST|GET /maps/{kmID}/tests` (section 12).
+- `start_test_run(km_id) -> TestRunStarted`, `get_test_run(run_id) -> TestRun`, `wait_for_test_run(run_id, *, poll_interval=1.0, timeout=300.0) -> TestRun`, `run_tests(km_id, *, poll_interval=1.0, timeout=300.0) -> TestRun` - UNDOCUMENTED `POST /maps/{kmID}/runs`, `GET /runs/{runID}` (section 12).
+- `add_readme(km_id, readme) -> ReadmeAdded` - UNDOCUMENTED `POST /maps/{kmID}/readme`; `validate_rblang(rblang) -> ValidationResult` - UNDOCUMENTED `POST /validate`, not deployed yet (section 12).
 - `close()`; context manager; properties `base_url`, `studio_url`, `http` (the `httpx.Client`), `config`.
 
 ### `Session` (from `rb.start()` / `rb.resume()`)
@@ -219,6 +226,12 @@ Natural language (beta):
 Knowledge maps (undocumented endpoints):
 - `KnowledgeMapSource(km_id, rblang: str, concepts: list, relationships: list)`.
 - `CreateMapResult(km_id: str (GUID for start()), name, id (Rainbird numeric id))`.
+- `TestSuite(km_id, test_count: int, tests: list)` (`tests` exactly as stored; `len()`/iteration over the tests); `TestSuiteCreated(km_id, test_count: int | None)`; `ReadmeAdded(km_id)`.
+- `TestRunStarted(run_id, km_id)`; `TestRun(run_id, status: TestRunStatus | str, summary: TestRunSummary, results: list[TestResult], error: TestRunError | None)` with `is_finished` (`complete` or `failed`), `is_complete`, `is_failed`, `all_passed` (complete and every test passed), `failures` (results with status `fail`/`error`).
+- `TestRunSummary(total, passed, failed, errored, not_run)` (ints, missing = 0); `TestResult(index, name, status: TestResultStatus | str, failed_step_index, errors: list[str], expected, actual)` with `passed`; `TestRunError(category, message)`.
+- `TestRunStatus`: `PENDING`, `RUNNING`, `COMPLETE`, `FAILED`, `UNKNOWN`; `TestResultStatus`: `PASS`, `FAIL`, `ERROR`, `NOT_RUN="notRun"`, `UNKNOWN` (str enums; an unrecognised status string is kept as `str`).
+- `ValidationResult(valid: bool, errors: list[ValidationMessage], warnings: list[ValidationMessage])`; `ValidationMessage(message, line: int | None)`, `str()` is `"line N: message"`.
+- Every class whose name starts with `Test` sets `__test__ = False`, so pytest does not try to collect it when you import it into a test module.
 
 ## 7. Exceptions (all subclass `RainbirdError`; `except RainbirdError` catches everything the SDK raises on purpose)
 
@@ -229,6 +242,8 @@ Knowledge maps (undocumented endpoints):
 | `InvalidAnswerError` (also `ValueError`) | Value does not fit the question: not yes/no for First Form, list for non-plural, not in `options` when `can_add` is false, skip when `allow_unknown` is false, non-boolean value for a truth object, `QuestionForm.UNKNOWN`; also an unsupported value (`None`, dict, list outside plural, NaN or infinity) wherever a value is coerced, including objects passed to `inject()`/`respond()`. |
 | `InvalidFactError` (also `ValueError`) | Malformed fact/answer payload (missing keys, unknown keys, certainty outside 0-100 or non-numeric, `unanswered` not bool-like, empty list). |
 | `KnowledgeMapError` | `create_map()` got HTTP 200 whose body carries a truthy `err`/`errors`/`error`; `.errors`, `.body`. |
+| `TestRunFailedError` | `run_tests()`/`wait_for_test_run()` saw the run end with status `failed` (the service could not finish it, e.g. category `suite_load` for a map without tests); `.run`, `.category`. Not raised for failing tests in a `complete` run. |
+| `TestRunTimeoutError` (a `RainbirdTimeoutError`) | `run_tests()`/`wait_for_test_run()` gave up after `timeout` seconds; the run continues server-side; `.run` (last state), `.run_id`. |
 | `NaturalLanguageError` | `explain()` returned an error object; `interact(...).raise_for_error()`. `.code`, `.message`, `.suggested_chat_response`, `.status_code`, `.body`. |
 | `RainbirdTransportError` > `RainbirdConnectionError` / `RainbirdTimeoutError` | No HTTP response (DNS/TCP/TLS failure, proxy or remote-protocol error, or timeout); `.method`, `.url`. |
 | `UnexpectedResponseError` | 2xx body not in the documented shape, including a non-JSON or empty 2xx body (`expected a JSON body from GET <url> but got: '<snippet>'`), a start response without a session id, an interaction log that is not a list of events (see `interactions()`) and a `GET /version` body that is not a plausible version (JSON must carry a non-empty string or number under `version`/`engine`/`semver`, so `{}`, `[]` and `{"version": null}` raise; plain text must be non-empty, without whitespace or `<`, at most 64 chars); `.body`, `.status_code`. |
@@ -236,7 +251,9 @@ Knowledge maps (undocumented endpoints):
 | `BadRequestError` 400 | Missing/invalid parameter, e.g. skipping a question without `allowUnknown` -> `"Please provide an expected boolean value for unanswered."`. |
 | `AuthenticationError` 401 | Invalid/missing API key. |
 | `PermissionDeniedError` 403 | Key not permitted (e.g. secured evidence without `x-evidence-key`). |
-| `NotFoundError` 404 | Unknown session, knowledge map or fact. |
+| `NotFoundError` 404 | Unknown session, knowledge map or fact; a map without tests (`get_tests`); an unknown test run or one on another user's map (`get_test_run`); `/validate` on a host that does not have it yet. |
+| `ConflictError` 409 | `create_tests()` / `add_readme()` on a map that already has tests / a readme (nothing changed); `get_tests()` when the stored suite is in a format the API cannot read. |
+| `RequestTooLargeError` 413 | Body over the limit: 1 MB for tests and readmes, 10 MB for `/validate`. |
 | `RateLimitError` 429 | Too many requests; `.retry_after`. |
 | `ServerError` 5xx | Platform failure. |
 
@@ -348,11 +365,13 @@ retry_post_on_transport_error=False)`, exponential backoff with jitter, honours 
 
 - `GET` (start, evidence, analysis, version) retries on connection errors, timeouts and 429, 500,
   502, 503 and 504 (`retry_statuses`).
-- `POST` (inject, query, response, undo, nl/*, maps) retries only on 429/503 (the service refused
-  the request before processing it) and **never on 502/504, timeouts or connection errors**: a
-  gateway can report 502/504 after the engine has already applied the request, and a
-  `POST /{sid}/response` that timed out may already have been applied server-side, so retrying
-  could answer twice.
+- `POST` (inject, query, response, undo, nl/*, maps, maps/{kmID}/tests|runs|readme, validate)
+  retries only on 429/503 (the service refused the request before processing it) and **never on
+  502/504, timeouts or connection errors**: a gateway can report 502/504 after the engine has
+  already applied the request, and a `POST /{sid}/response` that timed out may already have been
+  applied server-side, so retrying could answer twice. For the map endpoints a retried
+  `create_tests`/`add_readme` gets a 409 at worst, and a retried `start_test_run` can start a
+  second, harmless run.
 - Only `httpx.TimeoutException`, `NetworkError`, `RemoteProtocolError` and `ProxyError` count as
   retryable transport errors; `httpx.InvalidURL`/`UnsupportedProtocol` raise
   `RainbirdConfigurationError` at once. Redirects are never followed (3xx -> `RainbirdAPIError`).
@@ -374,10 +393,23 @@ retry_post_on_transport_error=False)`, exponential backoff with jitter, honours 
 Not in the OpenAPI spec; supplied by Rainbird maintainers and may change without notice.
 
 - `rb.get_map_source(km_id) -> KnowledgeMapSource` - `GET /analysis/file/{kmID}` with `X-API-Key`; returns `{"concepts": [...], "rels": [...], "rblang": "<?xml ..."}` -> `.rblang`, `.concepts`, `.relationships`.
-- `rb.create_map(name, rblang, description=None) -> CreateMapResult` - `POST /maps` with `X-API-Key` and `Version: v1`, body `{"rblang": xml, "name": name}` plus `"description": description` when given -> `{"kmID": "...", "id": 123, ...}` (`.description` echoes the response's value or your argument). On RBLang parse failure Rainbird replies **HTTP 200 with an `error` key**; the SDK raises `KnowledgeMapError` (`.errors`). Only truthy `err`/`errors`/`error` values are treated as failures (`{"error": false}`, `null`, `""`, `0`, `[]` and `{}` are success); an informational `message` on a success body is ignored. Use `result.km_id` with `rb.start()`.
+- `rb.create_map(name, rblang, description=None) -> CreateMapResult` - `POST /maps` with `X-API-Key` and `Version: v1`, body `{"rblang": xml, "name": name}` plus `"description": description` when given -> `{"kmID": "...", "id": 123, ...}` (`.description` echoes the response's value or your argument). On RBLang parse failure Rainbird replies **HTTP 200 with an `error` key**; the SDK raises `KnowledgeMapError` (`.errors`). Only truthy `err`/`errors`/`error` values are treated as failures (`{"error": false}`, `null`, `""`, `0`, `[]` and `{}` are success); an informational `message` on a success body is ignored. A name Rainbird does not accept (seen: any name containing `:`) is HTTP 400 `{"error": "NAME_ERROR"}` -> `BadRequestError`. Use `result.km_id` with `rb.start()`.
 
 Minimal RBLang: `<rbl:kb xmlns:rbl="http://rbl.io/schema/RBLang"><concept name="Person" type="string"/><concept name="Language" type="string"/><rel name="speaks" subject="Person" object="Language"/></rbl:kb>`
 (concept types: `string|number|date|truth`; instances via `<concinst>`/`<relinst>`).
+
+Map tests, readme and validation. All send `X-API-Key` and `Version: v1`; errors are
+`{"error": "..."}` (a missing key gives 403 `{"error": {"type": "NO_PERMISSION"}}`, an unexpected
+failure 500 `{"error": {"type": "UNHANDLED", "trace": "<uuid>"}}`, which `.message` renders as
+`UNHANDLED (trace <uuid>)`).
+
+- `rb.create_tests(km_id, tests) -> TestSuiteCreated` - `POST /maps/{kmID}/tests`, body `{"tests": [...]}` -> 201 `{"kmID", "testCount"}`. `tests` is the Studio Unit Tester format: `[{"name": str, "steps": [{"expect": {...}, "then": {...}}]}]`; `expect` is checked against the response to the **previous** step (`{"type": "none"}` on the first step) and the last step's `expect` is the outcome. `then.type`: `none`, `Query` (`relationship`, `subject`, `object`), `Inject` (`inject`: `[{subject, relationship, object, cf}]`), `Respond` (`with`: `[{subject, relationship, object, answer, unanswered, cf}]`). `expect.type`: `none`, `Expect Question` (`prompt`, `subtype` `"First Form"` or absent), `Expect Result` (`results`: `[{subject, relationship, object, cf}]`, same count, any order, `cf` compared as text). Certainty is **`cf`**; a fact with `certainty` and no `cf` raises `InvalidFactError` locally (the runner would ignore it and use 100). Also accepts a `TestSuite` or a `{"tests": [...]}` body (copy between maps). Only non-empty, list-of-objects and JSON-serialisable are checked locally; the server checks names/steps (400). 409 `ConflictError` if the map already has a non-empty suite; no replace/delete API.
+- `rb.get_tests(km_id) -> TestSuite` - `GET /maps/{kmID}/tests` -> `{"kmID", "testCount", "tests"}` (stored as-is, may include Studio fields such as `lastRun`). 404 `no tests found`; 409 unreadable suite.
+- `rb.start_test_run(km_id) -> TestRunStarted` - `POST /maps/{kmID}/runs`, no body -> 202 `{"runID"}` (+ `Location: /runs/{id}`). Always the **draft**, always the whole suite; accepted even with no tests (the run then fails with `suite_load`). No list/cancel API.
+- `rb.get_test_run(run_id) -> TestRun` - `GET /runs/{runID}` -> `{"runID", "status", "summary": {"total", "passed", "failed", "errored", "notRun"}, "results": [{"index", "name", "status", "failedStepIndex"?, "errors"?, "expected"?, "actual"?}], "error"?: {"category", "message"}}`. Run status `pending|running|complete|failed|unknown`; result status `pass|fail|error|notRun|unknown`. Error categories: `unsupported_version`, `suite_load`, `engine`, `invalid_selection`, `timeout`, `store`, `panic`, `abandoned` (15 minutes without progress). 404 for unknown runs **and** runs on other users' maps; never "still starting".
+- `rb.wait_for_test_run(run_id, *, poll_interval=1.0, timeout=300.0) -> TestRun` polls until `complete` (returned, even with failing tests: check `all_passed`) or `failed` (`TestRunFailedError`); after `timeout` seconds `TestRunTimeoutError` (`None` = no limit). `rb.run_tests(km_id, ...)` = `start_test_run` + `wait_for_test_run`. Sync sleeps with `time.sleep`, async with `anyio.sleep`. Bad `poll_interval` (must be > 0) / `timeout` (>= 0 or `None`) raise `RainbirdConfigurationError` before any request.
+- `rb.add_readme(km_id, readme) -> ReadmeAdded` - `POST /maps/{kmID}/readme`, body `{"readme": markdown}` -> 201 `{"kmID"}`. Sets the **draft's** readme only if it has none (null, whitespace or `<p><br></p>`); 409 otherwise. Server limits: non-blank (also checked locally), at most 100,000 characters, must not start with `<` after whitespace/BOM (400). Published versions keep their readme until the next publish.
+- `rb.validate_rblang(rblang) -> ValidationResult` - `POST /validate`, body `{"rblang": xml}` -> **200 even for invalid RBLang**: `{"valid": bool, "errors": [{"message", "line"?}], "warnings": [...]}`; at most one error (compilation stops), warnings only when valid. Server allows 5 minutes (raise the client `timeout` for huge maps); 10 MB body limit (413). **Not deployed on any host as of 2026-10-27** (Community on engine 4.123.0 still answers 404); until it is, the call raises `NotFoundError`.
 
 ## 13. Common mistakes
 
@@ -398,6 +430,9 @@ Minimal RBLang: `<rbl:kb xmlns:rbl="http://rbl.io/schema/RBLang"><concept name="
 15. Forgetting `rb.close()` / `await rb.aclose()` (or the context manager) in long-running processes.
 16. Importing `NoActiveSessionError`: it was removed (never raised). Catch `NoPendingQuestionError` for `answer()`/`skip()` without a question and `RainbirdConfigurationError` for bad arguments.
 17. Passing a `datetime` and expecting the time of day to survive: only `YYYY-MM-DD` is sent. Use an `int` of epoch milliseconds for instants.
+18. Writing `certainty` instead of `cf` in a test suite (rejected with `InvalidFactError`), or putting a test's expected answer in the same step as its `Query`: `expect` applies to the response of the previous step.
+19. Treating a `complete` test run as a pass: check `run.all_passed`. `TestRunFailedError` means the run itself could not finish, not that tests failed.
+20. Retrying `get_test_run()` on 404 as if the run were still starting: 404 means the id is unknown or on someone else's map.
 18. Constructing `Rainbird()` (which demands a key) just to call `version()` for a health check: `engine_version()` / `async_engine_version()` need no key.
 19. Retrying `POST` on 502/504 yourself, or setting `post_retry_statuses` to include them, without accepting that the answer may be applied twice (section 11).
 

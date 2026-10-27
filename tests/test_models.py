@@ -42,12 +42,24 @@ from rainbird_ai.models import (
     Question,
     QuestionForm,
     QuestionResponse,
+    ReadmeAdded,
     ResultItem,
     ResultResponse,
     Rule,
     SessionFact,
     SessionFacts,
     StartResponse,
+    TestResult,
+    TestResultStatus,
+    TestRun,
+    TestRunError,
+    TestRunStarted,
+    TestRunStatus,
+    TestRunSummary,
+    TestSuite,
+    TestSuiteCreated,
+    ValidationMessage,
+    ValidationResult,
     _parse_datetime,
     parse_query_response,
     studio_url_for,
@@ -72,6 +84,10 @@ from tests.conftest import (
     RESULT_TOM_SPEAKS_GERMAN,
     SESSION_FACTS,
     SESSION_VERSION,
+    TEST_RUN_COMPLETE,
+    TEST_RUN_FAILED,
+    TEST_SUITE,
+    VALIDATE_OK,
     FakeRainbird,
 )
 
@@ -2230,6 +2246,202 @@ class TestCreateMapResult:
     def test_missing_id_raises_value_error(self, body: dict[str, Any]) -> None:
         with pytest.raises(ValueError, match="knowledge map id"):
             CreateMapResult.from_dict(body, name="x")
+
+
+# --------------------------------------------------------------------------- map tests, readme, validation
+
+
+class TestTestStatuses:
+    @pytest.mark.parametrize("member", list(TestRunStatus))
+    def test_run_status_round_trips_and_prints_its_value(self, member: TestRunStatus) -> None:
+        assert TestRunStatus.parse(member.value) is member
+        assert str(member) == f"{member}" == member.value
+        assert member == member.value  # a str enum compares equal to the API string
+
+    @pytest.mark.parametrize("member", list(TestResultStatus))
+    def test_result_status_round_trips(self, member: TestResultStatus) -> None:
+        assert TestResultStatus.parse(member.value) is member
+        assert str(member) == member.value
+
+    def test_not_run_keeps_the_api_spelling(self) -> None:
+        assert TestResultStatus.NOT_RUN.value == "notRun"
+
+    def test_unknown_values_are_kept_and_none_is_unknown(self) -> None:
+        assert TestRunStatus.parse("cancelled") == "cancelled"
+        assert not isinstance(TestRunStatus.parse("cancelled"), TestRunStatus)
+        assert TestRunStatus.parse(None) is TestRunStatus.UNKNOWN
+        assert TestResultStatus.parse("skipped") == "skipped"
+        assert TestResultStatus.parse(None) is TestResultStatus.UNKNOWN
+
+    def test_enums_have_no_extra_members(self) -> None:
+        assert [m.value for m in TestRunStatus] == [
+            "pending",
+            "running",
+            "complete",
+            "failed",
+            "unknown",
+        ]
+        assert [m.value for m in TestResultStatus] == ["pass", "fail", "error", "notRun", "unknown"]
+
+
+class TestTestSuiteModels:
+    def test_suite_from_body(self) -> None:
+        body = {"kmID": KM_ID, "testCount": 1, "tests": TEST_SUITE}
+        suite = TestSuite.from_dict(body)
+        assert (suite.km_id, suite.test_count, suite.tests, len(suite)) == (KM_ID, 1, TEST_SUITE, 1)
+        assert list(suite) == TEST_SUITE
+        assert suite.to_dict() == body and suite.to_dict() is not body
+
+    def test_suite_falls_back_to_the_given_km_id_and_the_list_length(self) -> None:
+        suite = TestSuite.from_dict({"tests": [{"name": "a"}, "odd entry"]}, km_id="KM")
+        assert (suite.km_id, suite.test_count) == ("KM", 2)
+        assert suite.tests == [{"name": "a"}, "odd entry"]  # kept exactly as stored
+
+    def test_suite_tolerates_missing_and_odd_fields(self) -> None:
+        suite = TestSuite.from_dict({"testCount": "3"})
+        assert (suite.km_id, suite.test_count, suite.tests) == ("", 3, [])
+
+    def test_suite_created(self) -> None:
+        created = TestSuiteCreated.from_dict({"kmID": KM_ID, "testCount": 2})
+        assert (created.km_id, created.test_count) == (KM_ID, 2)
+        assert TestSuiteCreated.from_dict({}, km_id="KM").test_count is None
+
+    def test_run_started_needs_a_run_id(self) -> None:
+        started = TestRunStarted.from_dict({"runID": "r-1"}, km_id=KM_ID)
+        assert (started.run_id, started.km_id) == ("r-1", KM_ID)
+        for body in ({}, {"runID": None}, {"runID": " "}):
+            with pytest.raises(ValueError, match="run id"):
+                TestRunStarted.from_dict(body)
+
+    def test_readme_added(self) -> None:
+        assert ReadmeAdded.from_dict({"kmID": "a"}).km_id == "a"
+        assert ReadmeAdded.from_dict({}, km_id="b").km_id == "b"
+
+
+class TestTestRunModels:
+    def test_complete_run_with_a_failure(self) -> None:
+        run = TestRun.from_dict({"runID": "r", **TEST_RUN_COMPLETE})
+        assert run.run_id == "r"
+        assert run.status is TestRunStatus.COMPLETE
+        assert run.is_finished and run.is_complete and not run.is_failed
+        assert not run.all_passed
+        assert run.summary == TestRunSummary.from_dict(TEST_RUN_COMPLETE["summary"])
+        assert [r.name for r in run.failures] == ["Fred lives in France"]
+        assert str(run.results[0]) == "[0] Fred speaks French: pass"
+        assert str(run.results[1]) == "[1] Fred lives in France: fail"
+
+    def test_failed_run(self) -> None:
+        run = TestRun.from_dict({"runID": "r", **TEST_RUN_FAILED})
+        assert run.is_finished and run.is_failed and not run.all_passed
+        assert run.error == TestRunError.from_dict(TEST_RUN_FAILED["error"])
+        assert run.error is not None and run.error.category == "suite_load"
+        assert str(run.error) == "the map's tests couldn't be loaded (suite_load)"
+
+    @pytest.mark.parametrize("status", ["pending", "running", "unknown", "cancelled", None])
+    def test_only_complete_and_failed_are_final(self, status: str | None) -> None:
+        assert not TestRun.from_dict({"status": status}).is_finished
+
+    def test_all_passed_needs_a_complete_run_where_every_test_passed(self) -> None:
+        def run(status: str, total: int, passed: int) -> TestRun:
+            return TestRun.from_dict(
+                {"status": status, "summary": {"total": total, "passed": passed}}
+            )
+
+        assert run("complete", 2, 2).all_passed
+        assert not run("complete", 2, 1).all_passed
+        assert not run("complete", 0, 0).all_passed  # nothing ran
+        assert not run("running", 2, 2).all_passed
+
+    def test_failures_include_errors_but_not_tests_still_to_run(self) -> None:
+        results = [
+            {"index": i, "name": s, "status": s}
+            for i, s in enumerate(["pass", "fail", "error", "notRun"])
+        ]
+        run = TestRun.from_dict({"status": "running", "results": results})
+        assert [r.status for r in run.failures] == [TestResultStatus.FAIL, TestResultStatus.ERROR]
+
+    def test_run_tolerates_a_sparse_body(self) -> None:
+        run = TestRun.from_dict({"status": "pending", "error": "not an object"}, run_id="r")
+        assert run.run_id == "r"
+        assert run.summary == TestRunSummary()
+        assert (run.results, run.error) == ([], None)
+
+    def test_summary_counts_default_to_zero_and_accept_strings(self) -> None:
+        summary = TestRunSummary.from_dict(
+            {"total": "3", "passed": 2, "notRun": None, "failed": 1.5}
+        )
+        assert (
+            summary.total,
+            summary.passed,
+            summary.failed,
+            summary.errored,
+            summary.not_run,
+        ) == (
+            3,
+            2,
+            0,
+            0,
+            0,
+        )
+
+    def test_result_defaults(self) -> None:
+        result = TestResult.from_dict({})
+        assert (result.index, result.name, result.status) == (None, "", TestResultStatus.UNKNOWN)
+        assert (result.failed_step_index, result.errors, result.expected, result.actual) == (
+            None,
+            [],
+            None,
+            None,
+        )
+        assert not result.passed
+        assert str(result) == "[?] : unknown"
+
+    def test_result_errors_are_always_a_list_of_strings(self) -> None:
+        assert TestResult.from_dict({"errors": "one"}).errors == ["one"]
+        assert TestResult.from_dict({"errors": [1, None, "x"]}).errors == ["1", "x"]
+
+    def test_run_error_str_falls_back(self) -> None:
+        assert str(TestRunError.from_dict({"category": "panic"})) == "panic"
+        assert str(TestRunError.from_dict({"message": "stopped"})) == "stopped"
+        assert str(TestRunError.from_dict({})) == "the test run failed"
+
+    def test_models_are_frozen_and_keep_raw(self) -> None:
+        body = {"runID": "r", **TEST_RUN_COMPLETE}
+        run = TestRun.from_dict(body)
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            run.status = TestRunStatus.FAILED  # type: ignore[misc]
+        dumped = run.to_dict()
+        assert dumped == body
+        dumped["results"].clear()
+        assert len(run.raw["results"]) == 2
+
+
+class TestValidationModels:
+    def test_result(self) -> None:
+        result = ValidationResult.from_dict(VALIDATE_OK)
+        assert result.valid is True
+        assert result.errors == []
+        assert result.warnings[0] == ValidationMessage(
+            "concept 'Language' has no instances", 4, raw=VALIDATE_OK["warnings"][0]
+        )
+        assert result.warnings[1].line is None
+
+    def test_message_from_a_bare_string(self) -> None:
+        message = ValidationMessage.from_dict("unexpected token")
+        assert (message.message, message.line, str(message)) == (
+            "unexpected token",
+            None,
+            "unexpected token",
+        )
+
+    def test_message_tolerates_odd_line_values(self) -> None:
+        assert ValidationMessage.from_dict({"message": "m", "line": "12"}).line == 12
+        assert ValidationMessage.from_dict({"message": "m", "line": "twelve"}).line is None
+        assert str(ValidationMessage.from_dict({"message": "m", "line": 3})) == "line 3: m"
+
+    def test_valid_is_false_unless_the_body_says_true(self) -> None:
+        assert ValidationResult.from_dict({}).valid is False
+        assert ValidationResult.from_dict({"valid": "true"}).valid is True
 
 
 # --------------------------------------------------------------------------- raw / to_dict / frozen

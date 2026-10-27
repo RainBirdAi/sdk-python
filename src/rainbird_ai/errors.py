@@ -12,26 +12,34 @@ Hierarchy::
     ├── InvalidFactError                fact payload is malformed
     ├── KnowledgeMapError               /maps accepted the request but rejected the RBLang
     ├── NaturalLanguageError            /nl/* endpoint returned an error object
+    ├── TestRunFailedError              a knowledge map test run ended with status "failed"
     ├── RainbirdTransportError
     │   ├── RainbirdConnectionError     DNS / TCP / TLS failure
     │   └── RainbirdTimeoutError        request timed out
+    │       └── TestRunTimeoutError     gave up waiting for a test run to finish
     ├── UnexpectedResponseError         2xx body that is not the documented shape
     └── RainbirdAPIError                non-2xx HTTP response
         ├── BadRequestError             400
         ├── AuthenticationError         401
         ├── PermissionDeniedError       403
         ├── NotFoundError               404
+        ├── ConflictError               409
+        ├── RequestTooLargeError        413
         ├── RateLimitError              429
         └── ServerError                 5xx
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .models import TestRun
 
 __all__ = [
     "AuthenticationError",
     "BadRequestError",
+    "ConflictError",
     "InvalidAnswerError",
     "InvalidFactError",
     "KnowledgeMapError",
@@ -46,7 +54,10 @@ __all__ = [
     "RainbirdTimeoutError",
     "RainbirdTransportError",
     "RateLimitError",
+    "RequestTooLargeError",
     "ServerError",
+    "TestRunFailedError",
+    "TestRunTimeoutError",
     "UnexpectedResponseError",
 ]
 
@@ -150,6 +161,18 @@ class NotFoundError(RainbirdAPIError):
     """404: the session, knowledge map or fact could not be found."""
 
 
+class ConflictError(RainbirdAPIError):
+    """409: the request conflicts with what is stored, so nothing was changed.
+
+    For example the map already has a test suite or a readme, or its stored test suite is in
+    a format the API cannot read.
+    """
+
+
+class RequestTooLargeError(RainbirdAPIError):
+    """413: the request body is over the endpoint's size limit (1 MB, 10 MB for ``/validate``)."""
+
+
 class RateLimitError(RainbirdAPIError):
     """429: too many requests. ``retry_after`` holds the server's hint when provided."""
 
@@ -199,6 +222,45 @@ class NaturalLanguageError(RainbirdError):
         self.suggested_chat_response = suggested_chat_response
         self.status_code = status_code
         self.body = body
+
+
+class TestRunFailedError(RainbirdError):
+    """A knowledge map test run ended with status ``failed``: the service could not finish it.
+
+    This is not "some tests failed" (that is a ``complete`` run; check
+    :attr:`~rainbird_ai.TestRun.all_passed`) but, for example, a map without tests
+    (``category == "suite_load"``) or a run abandoned after 15 minutes without progress.
+
+    Attributes:
+        run: The final :class:`~rainbird_ai.TestRun`, including any results recorded so far.
+        category: The run's ``error.category`` (``suite_load``, ``engine``, ``timeout``, ...).
+    """
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    def __init__(self, message: str, *, run: TestRun | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.run = run
+        self.category = run.error.category if run is not None and run.error else None
+
+
+class TestRunTimeoutError(RainbirdTimeoutError):
+    """``run_tests()`` / ``wait_for_test_run()`` stopped waiting before the test run finished.
+
+    The run continues on the server: keep waiting with ``wait_for_test_run(exc.run_id)``.
+
+    Attributes:
+        run: The last :class:`~rainbird_ai.TestRun` seen (status ``pending`` or ``running``).
+        run_id: Its id.
+    """
+
+    __test__ = False  # not a pytest test class, despite the name
+
+    def __init__(self, message: str, *, run: TestRun | None = None) -> None:
+        super().__init__(message)
+        self.run = run
+        self.run_id = run.run_id if run is not None else None
 
 
 class UnexpectedResponseError(RainbirdError):
