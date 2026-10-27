@@ -13,7 +13,7 @@ share one API; every response is a typed, frozen dataclass that keeps the origin
 > **Status: alpha.** The package is usable and tested, but it is pre-1.0: the public API may
 > change between minor versions (`0.x`) and every such change is listed in
 > [CHANGELOG.md](https://github.com/RainBirdAi/sdk-python/blob/main/CHANGELOG.md). Pin a minor
-> version (`rainbird-ai~=0.5.0`) if you need stability.
+> version (`rainbird-ai~=0.6.0`) if you need stability.
 
 ## Installation
 
