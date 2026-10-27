@@ -6,7 +6,8 @@ environment. The query scripts (`basic_query.py`, `automated_answerer.py`, `deci
 (defaults `speaks` / `Tom`; use values from your own knowledge map); `async_query.py` takes a
 relationship followed by any number of subjects (defaults `speaks Tom Ana`);
 `natural_language.py` takes a prompt; `create_map_from_rblang.py` takes a map name and needs no
-`RAINBIRD_KM_ID`:
+`RAINBIRD_KM_ID`; `run_map_tests.py` takes an optional `SUBJECT RELATIONSHIP OBJECT` for the test
+it creates when the map has none (default `Tom speaks German`):
 
 ```bash
 pip install rainbird-ai
@@ -17,6 +18,7 @@ python examples/basic_query.py speaks Tom
 python examples/async_query.py speaks Tom Ana
 python examples/natural_language.py "Which language does Tom speak? He lives in Germany"
 python examples/create_map_from_rblang.py "My map"
+python examples/run_map_tests.py Tom speaks German
 ```
 
 | Script | Shows |
@@ -29,6 +31,8 @@ python examples/create_map_from_rblang.py "My map"
 | `inject_and_query.py` | Inject a list of `Fact` objects (batched automatically; note on accepted object types such as `date`), list the session's facts filtered by relationship, then query. |
 | `natural_language.py` | `/nl/interact` loop handling question, result and error replies, then `/nl/explain` for the first result's fact id. |
 | `create_map_from_rblang.py` | Undocumented endpoints: `create_map()` from an RBLang string, `get_map_source()`, and `KnowledgeMapError` handling. |
+| `run_map_tests.py` | Undocumented endpoints, as a CI-style check: `validate_rblang()` on the map's source (skipped on a 404 while `/validate` is not deployed), `create_tests()` when `get_tests()` finds none (note the `cf` certainty key and the expect/then offset), then `run_tests()` on the draft, printing failures and exiting 1 unless `run.all_passed`. |
 
-The scripts call the live Rainbird API and create real sessions (and, for the last one, a
-real knowledge map).
+The scripts call the live Rainbird API and create real sessions (`create_map_from_rblang.py`
+also creates a real knowledge map, and `run_map_tests.py` a test suite on your map when it has
+none, which can only be changed in Studio afterwards).

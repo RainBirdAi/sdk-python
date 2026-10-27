@@ -49,6 +49,7 @@ from rainbird_ai.aio import AsyncRainbird
 from rainbird_ai.errors import (
     AuthenticationError,
     BadRequestError,
+    ConflictError,
     NotFoundError,
     PermissionDeniedError,
     RainbirdAPIError,
@@ -58,6 +59,7 @@ from rainbird_ai.errors import (
     RainbirdTimeoutError,
     RainbirdTransportError,
     RateLimitError,
+    RequestTooLargeError,
     ServerError,
     UnexpectedResponseError,
 )
@@ -414,6 +416,24 @@ class TestExtractErrorMessages:
         body = {"error": {"message": "m", "detail": "d", "code": 1}}
         assert extract_error_messages(body) == ["m", "d"]
 
+    def test_error_type_object_from_map_endpoints(self) -> None:
+        # 403 when no key is sent to the map-management endpoints.
+        assert extract_error_messages({"error": {"type": "NO_PERMISSION"}}) == ["NO_PERMISSION"]
+
+    def test_error_type_object_keeps_the_trace_id(self) -> None:
+        body = {"error": {"type": "UNHANDLED", "trace": "6f1c2d3e-0000-4000-8000-000000000001"}}
+        assert extract_error_messages(body) == [
+            "UNHANDLED (trace 6f1c2d3e-0000-4000-8000-000000000001)"
+        ]
+
+    def test_error_type_object_with_other_keys_is_serialised(self) -> None:
+        # Only the exact {"type"[, "trace"]} shape is shortened; anything else keeps every key.
+        body = {"error": {"type": "X", "code": 5}}
+        assert extract_error_messages(body) == ['{"code": 5, "type": "X"}']
+
+    def test_error_type_object_with_a_message_uses_the_message(self) -> None:
+        assert extract_error_messages({"error": {"type": "X", "message": "m"}}) == ["m"]
+
     @pytest.mark.parametrize("body", [None, 42, 1.5, True, object()])
     def test_non_dict_non_list_bodies_yield_nothing(self, body: Any) -> None:
         assert extract_error_messages(body) == []
@@ -515,7 +535,9 @@ class TestErrorForResponse:
             (503, ServerError),
             (599, ServerError),
             (418, RainbirdAPIError),
-            (409, RainbirdAPIError),
+            (409, ConflictError),
+            (413, RequestTooLargeError),
+            (410, RainbirdAPIError),
         ],
     )
     def test_status_maps_to_exact_class(self, status: int, cls: type[RainbirdAPIError]) -> None:
@@ -534,6 +556,26 @@ class TestErrorForResponse:
         err = error_for_response(_response(400, json={"err": ["one", "two"]}))
         assert err.message == "one; two"
         assert err.errors == ["one", "two"]
+
+    def test_nested_error_type_bodies_of_the_map_endpoints(self) -> None:
+        err = error_for_response(_response(403, json={"error": {"type": "NO_PERMISSION"}}))
+        assert type(err) is PermissionDeniedError
+        assert err.message == "NO_PERMISSION"
+        body = {"error": {"type": "UNHANDLED", "trace": "trace-123"}}
+        err = error_for_response(_response(500, json=body))
+        assert type(err) is ServerError
+        assert err.message == "UNHANDLED (trace trace-123)"
+        assert err.body == body
+
+    @pytest.mark.parametrize(
+        ("status", "message"),
+        [
+            (409, "The request conflicts with what is stored; nothing was changed"),
+            (413, "The request body is too large"),
+        ],
+    )
+    def test_409_and_413_default_messages(self, status: int, message: str) -> None:
+        assert error_for_response(_response(status)).message == message
 
     def test_error_object_shape(self) -> None:
         err = error_for_response(_response(403, json={"error": {"message": "nope"}}))

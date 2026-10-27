@@ -49,6 +49,13 @@ from .conftest import (
     RESULT_TOM_SPEAKS_GERMAN,
     SESSION_FACTS,
     SESSION_VERSION,
+    TEST_RUN_COMPLETE,
+    TEST_RUN_FAILED,
+    TEST_RUN_PASSED,
+    TEST_RUN_RUNNING,
+    TEST_SUITE,
+    VALIDATE_ERROR,
+    VALIDATE_OK,
     FakeRainbird,
     leaf_evidence,
 )
@@ -176,6 +183,12 @@ class TestParser:
             "interactions",
             "map get",
             "map create",
+            "map validate",
+            "map add-readme",
+            "map get-tests",
+            "map create-tests",
+            "map run-tests",
+            "map test-run",
         }
         for name, sub in leaves:
             func = sub.get_default("func")
@@ -261,8 +274,15 @@ class TestParser:
     def test_module_docstring_documents_exit_codes(self) -> None:
         doc = cli.__doc__ or ""
         assert "Exit codes" in doc
-        for code in ("0 success", "2 usage error", "3 a question is still pending", "130"):
-            assert code in doc
+        for code in (
+            "0 success",
+            "2 usage error",
+            "3 a question is still pending",
+            "a test run has not finished",
+            "4 a check failed",
+            "130",
+        ):
+            assert code in " ".join(doc.split()), code
 
 
 class TestGlobalOptionPlacement:
@@ -285,6 +305,12 @@ class TestGlobalOptionPlacement:
         ["interactions", "--session", SID],
         ["map", "get", KM_ID],
         ["map", "create", "--name", "n", "--file", "f"],
+        ["map", "validate", "--file", "f"],
+        ["map", "add-readme", KM_ID, "--file", "f"],
+        ["map", "get-tests", KM_ID],
+        ["map", "create-tests", KM_ID, "--file", "f"],
+        ["map", "run-tests", KM_ID],
+        ["map", "test-run", "RUN"],
     ]
 
     @pytest.mark.parametrize("leaf", LEAVES, ids=lambda leaf: " ".join(leaf[:2]))
@@ -1999,6 +2025,351 @@ class TestMapCreate:
         result = run("map", "create", "--file", str(tmp_path / "map.rbl"))
         assert result.code == 2
         assert "--name" in result.err
+
+
+class TestMapValidate:
+    def test_valid_rblang_prints_warnings_and_exits_0(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "map.rbl"
+        path.write_text(RBLANG, encoding="utf-8")
+        result = run("map", "validate", "--file", str(path))
+        assert result.code == 0, result.err
+        assert result.out == (
+            "valid\n"
+            "  warning  line 4: concept 'Language' has no instances\n"
+            "  warning  map has no rules\n"
+        )
+        assert fake.last.method == "POST"
+        assert fake.last.path == "/validate"
+        assert fake.last.headers["version"] == "v1"
+        assert fake.last.json == {"rblang": RBLANG}
+
+    def test_invalid_rblang_exits_4(self, run: Runner, tmp_path: Path) -> None:
+        path = tmp_path / "bad.rbl"
+        path.write_text("<kb/>", encoding="utf-8")
+        result = run("map", "validate", "--file", str(path))
+        assert result.code == 4
+        assert result.out == "invalid\n  error    line 1: root element must be rbl:kb\n"
+        assert result.err == ""
+
+    def test_json_output_still_exits_4_when_invalid(self, run: Runner, tmp_path: Path) -> None:
+        path = tmp_path / "bad.rbl"
+        path.write_text("<kb/>", encoding="utf-8")
+        result = run("--json", "map", "validate", "--file", str(path))
+        assert result.code == 4
+        assert result.json == VALIDATE_ERROR
+
+    def test_reads_stdin(
+        self, run: Runner, fake: FakeRainbird, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys, "stdin", io.StringIO(RBLANG))
+        result = run("map", "validate", "--file", "-", "--json")
+        assert result.code == 0, result.err
+        assert result.json == VALIDATE_OK
+        assert fake.last.json == {"rblang": RBLANG}
+
+    def test_host_without_the_endpoint_exits_1(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "map.rbl"
+        path.write_text(RBLANG, encoding="utf-8")
+        fake.fail_next(404, "<html><body>404 page not found</body></html>")
+        result = run("map", "validate", "--file", str(path))
+        assert result.code == 1
+        assert "HTTP 404" in result.err
+        assert "404 page not found" in result.err
+
+
+class TestMapAddReadme:
+    def test_adds_readme_from_file(self, run: Runner, fake: FakeRainbird, tmp_path: Path) -> None:
+        path = tmp_path / "README.md"
+        path.write_text("# Languages\n\nWho speaks what.\n", encoding="utf-8")
+        result = run("map", "add-readme", KM_ID, "--file", str(path))
+        assert result.code == 0, result.err
+        assert result.out == f"added a readme to the draft of {KM_ID}\n"
+        assert fake.last.method == "POST"
+        assert fake.last.path == f"/maps/{KM_ID}/readme"
+        assert fake.last.headers["version"] == "v1"
+        assert fake.last.json == {"readme": "# Languages\n\nWho speaks what.\n"}
+        assert fake.readmes[KM_ID] == "# Languages\n\nWho speaks what.\n"
+
+    def test_existing_readme_is_a_conflict(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        fake.readmes[KM_ID] = "# Already here"
+        path = tmp_path / "README.md"
+        path.write_text("# New", encoding="utf-8")
+        result = run("map", "add-readme", KM_ID, "--file", str(path))
+        assert result.code == 1
+        assert "HTTP 409" in result.err
+        assert "this map already has a readme; nothing was changed" in result.err
+        assert fake.readmes[KM_ID] == "# Already here"
+
+    def test_blank_file_is_rejected_before_any_request(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "README.md"
+        path.write_text("  \n", encoding="utf-8")
+        result = run("map", "add-readme", KM_ID, "--file", str(path))
+        assert result.code == 1
+        assert "readme must not be empty" in result.err
+        assert fake.requests == []
+
+    def test_json_output(self, run: Runner, tmp_path: Path) -> None:
+        path = tmp_path / "README.md"
+        path.write_text("# Languages", encoding="utf-8")
+        result = run("map", "add-readme", KM_ID, "--file", str(path), "--json")
+        assert result.code == 0, result.err
+        assert result.json == {"kmID": KM_ID}
+
+
+class TestMapGetTests:
+    def test_lists_tests(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.test_suites[KM_ID] = TEST_SUITE
+        result = run("map", "get-tests", KM_ID)
+        assert result.code == 0, result.err
+        assert result.out == f"1 test(s) on {KM_ID}\n  [0] Fred speaks French (2 step(s))\n"
+        assert fake.last.method == "GET"
+        assert fake.last.path == f"/maps/{KM_ID}/tests"
+        assert fake.last.headers["version"] == "v1"
+
+    def test_out_writes_the_suite_as_json(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        fake.test_suites[KM_ID] = TEST_SUITE
+        target = tmp_path / "tests.json"
+        result = run("map", "get-tests", KM_ID, "--out", str(target))
+        assert result.code == 0, result.err
+        assert result.out == f"wrote 1 test(s) to {target}\n"
+        assert json.loads(target.read_text(encoding="utf-8")) == TEST_SUITE
+
+    def test_json_prints_the_whole_body(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.test_suites[KM_ID] = TEST_SUITE
+        result = run("--json", "map", "get-tests", KM_ID)
+        assert result.code == 0, result.err
+        assert result.json == {"kmID": KM_ID, "testCount": 1, "tests": TEST_SUITE}
+
+    def test_map_without_tests_exits_1(self, run: Runner) -> None:
+        result = run("map", "get-tests", KM_ID)
+        assert result.code == 1
+        assert "HTTP 404" in result.err
+        assert "no tests found" in result.err
+
+
+class TestMapCreateTests:
+    def test_creates_from_a_json_list(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "tests.json"
+        path.write_text(json.dumps(TEST_SUITE), encoding="utf-8")
+        result = run("map", "create-tests", KM_ID, "--file", str(path))
+        assert result.code == 0, result.err
+        assert result.out == f"created 1 test(s) on {KM_ID}\n"
+        assert fake.last.method == "POST"
+        assert fake.last.path == f"/maps/{KM_ID}/tests"
+        assert fake.last.headers["version"] == "v1"
+        assert fake.last.json == {"tests": TEST_SUITE}
+        assert fake.test_suites[KM_ID] == TEST_SUITE
+
+    def test_get_tests_output_can_be_copied_to_another_map(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        fake.test_suites[KM_ID] = TEST_SUITE
+        out_file, json_file = tmp_path / "tests.json", tmp_path / "body.json"
+        assert run("map", "get-tests", KM_ID, "--out", str(out_file)).code == 0
+        json_file.write_text(run("--json", "map", "get-tests", KM_ID).out, encoding="utf-8")
+        assert run("map", "create-tests", NEW_KM_ID, "--file", str(json_file)).code == 0
+        assert fake.test_suites[NEW_KM_ID] == TEST_SUITE
+        del fake.test_suites[NEW_KM_ID]
+        assert run("map", "create-tests", NEW_KM_ID, "--file", str(out_file)).code == 0
+        assert fake.test_suites[NEW_KM_ID] == TEST_SUITE
+
+    def test_reads_stdin(
+        self, run: Runner, fake: FakeRainbird, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(TEST_SUITE)))
+        result = run("map", "create-tests", KM_ID, "--file", "-", "--json")
+        assert result.code == 0, result.err
+        assert result.json == {"kmID": KM_ID, "testCount": 1}
+
+    def test_invalid_json_exits_2_without_a_request(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "tests.json"
+        path.write_text("[{", encoding="utf-8")
+        result = run("map", "create-tests", KM_ID, "--file", str(path))
+        assert result.code == 2
+        assert "invalid JSON" in result.err
+        assert fake.requests == []
+
+    @pytest.mark.parametrize("content", ["[]", "{}", '"tests"', '[["not", "a", "test"]]'])
+    def test_wrong_shape_exits_2_without_a_request(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path, content: str
+    ) -> None:
+        path = tmp_path / "tests.json"
+        path.write_text(content, encoding="utf-8")
+        result = run("map", "create-tests", KM_ID, "--file", str(path))
+        assert result.code == 2
+        assert result.err.startswith(f"rainbird: {path}: tests")
+        assert fake.requests == []
+
+    def test_certainty_instead_of_cf_exits_2(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        suite = json.loads(json.dumps(TEST_SUITE))
+        suite[0]["steps"][1]["expect"]["results"][0] = {
+            "subject": "Fred",
+            "relationship": "speaks",
+            "object": "French",
+            "certainty": 80,
+        }
+        path = tmp_path / "tests.json"
+        path.write_text(json.dumps(suite), encoding="utf-8")
+        result = run("map", "create-tests", KM_ID, "--file", str(path))
+        assert result.code == 2
+        assert "tests[0].steps[1].expect.results[0]" in result.err
+        assert "'cf'" in result.err
+        assert fake.requests == []
+
+    def test_map_that_already_has_tests_exits_1(
+        self, run: Runner, fake: FakeRainbird, tmp_path: Path
+    ) -> None:
+        fake.test_suites[KM_ID] = TEST_SUITE
+        path = tmp_path / "tests.json"
+        path.write_text(json.dumps(TEST_SUITE), encoding="utf-8")
+        result = run("map", "create-tests", KM_ID, "--file", str(path))
+        assert result.code == 1
+        assert "HTTP 409" in result.err
+        assert "tests already exist for this map" in result.err
+
+
+def only_run_id(fake: FakeRainbird) -> str:
+    (run_id,) = fake.test_runs
+    return run_id
+
+
+class TestMapRunTests:
+    def test_all_passed_exits_0(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_run(TEST_RUN_PASSED)
+        result = run("map", "run-tests", KM_ID)
+        assert result.code == 0, result.err
+        run_id = only_run_id(fake)
+        assert (
+            result.out == f"run {run_id} complete: 1 of 1 passed (0 failed, 0 errored, 0 not run)\n"
+        )
+        assert result.err == f"rainbird: started test run {run_id}\n"
+        assert [(c.method, c.path) for c in fake.requests] == [
+            ("POST", f"/maps/{KM_ID}/runs"),
+            ("GET", f"/runs/{run_id}"),
+        ]
+        assert all(c.headers["version"] == "v1" for c in fake.requests)
+        assert fake.requests[0].json is None  # no body
+
+    def test_failing_tests_exit_4_and_are_listed(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_run(TEST_RUN_COMPLETE)
+        result = run("map", "run-tests", KM_ID)
+        assert result.code == 4
+        run_id = only_run_id(fake)
+        assert result.out == (
+            f"run {run_id} complete: 1 of 2 passed (1 failed, 0 errored, 0 not run)\n"
+            "  fail   [1] Fred lives in France at step 1: "
+            "expected response did not match actual response\n"
+        )
+
+    def test_polls_until_the_run_is_final(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_run({**TEST_RUN_RUNNING, "status": "pending"}, TEST_RUN_RUNNING, TEST_RUN_PASSED)
+        result = run("map", "run-tests", KM_ID, "--poll-interval", "0.001")
+        assert result.code == 0, result.err
+        assert len(fake.calls("/runs/")) == 3
+
+    def test_failed_run_exits_1(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_run(TEST_RUN_FAILED)
+        result = run("map", "run-tests", KM_ID)
+        assert result.code == 1
+        run_id = only_run_id(fake)
+        assert result.out == (
+            f"run {run_id} failed: 0 of 0 passed (0 failed, 0 errored, 0 not run)\n"
+            "  error: the map's tests couldn't be loaded (suite_load)\n"
+        )
+        assert result.err.endswith(
+            f"rainbird: test run {run_id} failed: the map's tests couldn't be loaded (suite_load)\n"
+        )
+
+    def test_max_wait_exits_3_and_says_how_to_check_later(
+        self, run: Runner, fake: FakeRainbird
+    ) -> None:
+        fake.queue_run(TEST_RUN_RUNNING)
+        result = run("map", "run-tests", KM_ID, "--max-wait", "0")
+        assert result.code == 3
+        run_id = only_run_id(fake)
+        assert result.out.startswith(f"run {run_id} running: 1 of 2 passed")
+        assert result.err.endswith(
+            f"rainbird: test run {run_id} is still running; check it with "
+            f"rainbird map test-run {run_id}\n"
+        )
+        assert len(fake.calls("/runs/")) == 1
+
+    def test_no_wait_prints_the_run_id(self, run: Runner, fake: FakeRainbird) -> None:
+        result = run("map", "run-tests", KM_ID, "--no-wait")
+        assert result.code == 0, result.err
+        assert result.out == only_run_id(fake) + "\n"
+        assert fake.calls("/runs/") == []
+
+    def test_no_wait_json(self, run: Runner, fake: FakeRainbird) -> None:
+        result = run("--json", "map", "run-tests", KM_ID, "--no-wait")
+        assert result.code == 0, result.err
+        assert result.json == {"runID": only_run_id(fake)}
+
+    def test_json_prints_the_final_run(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_run(TEST_RUN_COMPLETE)
+        result = run("map", "run-tests", KM_ID, "--json")
+        assert result.code == 4
+        assert result.json == {"runID": only_run_id(fake), **TEST_RUN_COMPLETE}
+
+    @pytest.mark.parametrize(
+        ("option", "value"),
+        [("--poll-interval", "0"), ("--poll-interval", "-1"), ("--max-wait", "-1")],
+    )
+    def test_bad_polling_options_exit_2_before_starting_a_run(
+        self, run: Runner, fake: FakeRainbird, option: str, value: str
+    ) -> None:
+        result = run("map", "run-tests", KM_ID, option, value)
+        assert result.code == 2
+        assert option in result.err
+        assert fake.requests == []
+
+
+class TestMapTestRun:
+    def start_run(self, fake: FakeRainbird) -> str:
+        fake.test_runs["run-1"] = KM_ID
+        return "run-1"
+
+    def test_complete_and_passed_exits_0(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_run(TEST_RUN_PASSED)
+        result = run("map", "test-run", self.start_run(fake))
+        assert result.code == 0, result.err
+        assert result.out.startswith("run run-1 complete: 1 of 1 passed")
+        assert fake.last.path == "/runs/run-1"
+        assert fake.last.headers["version"] == "v1"
+
+    def test_failing_tests_exit_4(self, run: Runner, fake: FakeRainbird) -> None:
+        result = run("map", "test-run", self.start_run(fake))  # default body has a failure
+        assert result.code == 4
+        assert "  fail   [1] Fred lives in France" in result.out
+
+    def test_unfinished_run_exits_3(self, run: Runner, fake: FakeRainbird) -> None:
+        fake.queue_run(TEST_RUN_RUNNING)
+        result = run("map", "test-run", self.start_run(fake), "--json")
+        assert result.code == 3
+        assert result.json == {"runID": "run-1", **TEST_RUN_RUNNING}
+        assert "is still running" in result.err
+
+    def test_unknown_run_exits_1(self, run: Runner) -> None:
+        result = run("map", "test-run", "nope")
+        assert result.code == 1
+        assert "HTTP 404" in result.err
+        assert "run not found" in result.err
 
 
 # --------------------------------------------------------------------------- errors, auth, global options

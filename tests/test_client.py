@@ -25,6 +25,7 @@ from rainbird_ai import (
     Answer,
     AuthenticationError,
     BadRequestError,
+    ConflictError,
     Decision,
     DecisionStatus,
     Environment,
@@ -51,12 +52,23 @@ from rainbird_ai import (
     RainbirdConfigurationError,
     RainbirdConnectionError,
     RainbirdError,
+    RainbirdTimeoutError,
     RateLimitError,
+    ReadmeAdded,
+    RequestTooLargeError,
     ResultResponse,
     ServerError,
     Session,
     SessionFacts,
+    TestResultStatus,
+    TestRunFailedError,
+    TestRunStarted,
+    TestRunStatus,
+    TestRunTimeoutError,
+    TestSuite,
+    TestSuiteCreated,
     UnexpectedResponseError,
+    ValidationResult,
     __version__,
     engine_version,
 )
@@ -78,6 +90,13 @@ from tests.conftest import (
     QUESTION_SECOND_SUBJECT,
     RBLANG,
     RESULT_TOM_SPEAKS_GERMAN,
+    TEST_RUN_COMPLETE,
+    TEST_RUN_FAILED,
+    TEST_RUN_PASSED,
+    TEST_RUN_RUNNING,
+    TEST_SUITE,
+    VALIDATE_ERROR,
+    VALIDATE_OK,
     FakeRainbird,
 )
 
@@ -2083,6 +2102,482 @@ class TestKnowledgeMaps:
         fake.map_create_body = {"ok": True}
         with pytest.raises(UnexpectedResponseError):
             client.create_map("x", RBLANG)
+
+
+# =========================================================================== map tests, readme, validation
+
+
+def suite_with(part: str, key: str, fact: dict[str, Any]) -> list[dict[str, Any]]:
+    """``TEST_SUITE`` with ``fact`` as the only entry of ``steps[1][part][key]``."""
+    suite = json.loads(json.dumps(TEST_SUITE))
+    suite[0]["steps"][1][part] = {"type": "x", key: [fact]}
+    return suite
+
+
+@pytest.fixture
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record ``time.sleep`` calls instead of sleeping (polling and retry back-off)."""
+    recorded: list[float] = []
+    monkeypatch.setattr(client_module.time, "sleep", recorded.append)
+    return recorded
+
+
+class TestMapTests:
+    def test_create_tests(self, client: Rainbird, fake: FakeRainbird) -> None:
+        created = client.create_tests(KM_ID, TEST_SUITE)
+        assert isinstance(created, TestSuiteCreated)
+        assert (created.km_id, created.test_count) == (KM_ID, 1)
+        assert created.raw == {"kmID": KM_ID, "testCount": 1}
+        assert fake.test_suites[KM_ID] == TEST_SUITE
+
+    def test_create_tests_request(self, client: Rainbird, fake: FakeRainbird) -> None:
+        client.create_tests(KM_ID, TEST_SUITE)
+        assert fake.last.method == "POST"
+        assert fake.last.path == f"/maps/{KM_ID}/tests"
+        assert fake.last.json == {"tests": TEST_SUITE}
+        assert fake.last.headers["version"] == "v1"
+        assert fake.last.headers["x-api-key"] == API_KEY
+        assert fake.last.headers["content-type"] == "application/json"
+
+    def test_a_suite_can_be_copied_between_maps(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.test_suites[KM_ID] = TEST_SUITE
+        other = fake.map_create_body["kmID"]
+        client.create_tests(other, client.get_tests(KM_ID))  # a TestSuite
+        assert fake.test_suites.pop(other) == TEST_SUITE
+        client.create_tests(other, client.get_tests(KM_ID).raw)  # the {"tests": [...]} body
+        assert fake.test_suites.pop(other) == TEST_SUITE
+        client.create_tests(other, tuple(TEST_SUITE))
+        assert fake.test_suites[other] == TEST_SUITE
+
+    def test_create_tests_on_a_map_with_tests_is_a_conflict(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.test_suites[KM_ID] = TEST_SUITE
+        with pytest.raises(ConflictError) as info:
+            client.create_tests(KM_ID, TEST_SUITE)
+        assert info.value.status_code == 409
+        assert info.value.message == "tests already exist for this map; nothing was changed"
+        assert isinstance(info.value, RainbirdAPIError)
+        assert len(fake.calls("/tests")) == 1  # 409 is never retried
+
+    @pytest.mark.parametrize("tests", [[], {}, (), "tests", None, {"tests": []}, [1], [["a"]]])
+    def test_create_tests_rejects_anything_but_a_list_of_objects(
+        self, client: Rainbird, fake: FakeRainbird, tests: Any
+    ) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="tests"):
+            client.create_tests(KM_ID, tests)
+        assert fake.requests == []
+
+    @pytest.mark.parametrize(
+        ("part", "key"), [("then", "inject"), ("then", "with"), ("expect", "results")]
+    )
+    def test_certainty_instead_of_cf_is_rejected(
+        self, client: Rainbird, fake: FakeRainbird, part: str, key: str
+    ) -> None:
+        fact = {"subject": "Fred", "relationship": "speaks", "object": "French", "certainty": 80}
+        with pytest.raises(InvalidFactError) as info:
+            client.create_tests(KM_ID, suite_with(part, key, fact))
+        assert f"tests[0].steps[1].{part}.{key}[0]" in str(info.value)
+        assert "'cf'" in str(info.value)
+        assert fake.requests == []
+
+    def test_cf_alongside_certainty_is_accepted(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fact = {
+            "subject": "Fred",
+            "relationship": "speaks",
+            "object": "French",
+            "cf": 80,
+            "certainty": 80,
+        }
+        client.create_tests(KM_ID, suite_with("then", "inject", fact))
+        assert fake.last.json["tests"][0]["steps"][1]["then"]["inject"] == [fact]
+
+    def test_other_suite_problems_are_left_to_the_server(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        # Blank names, missing steps, unknown types: the SDK sends them and the server decides.
+        client.create_tests(KM_ID, [{"name": "", "steps": None}, {"steps": [None, 1]}])
+        assert fake.last.json == {"tests": [{"name": "", "steps": None}, {"steps": [None, 1]}]}
+
+    @pytest.mark.parametrize("bad", [float("nan"), object()])
+    def test_unserialisable_suite_is_a_configuration_error(
+        self, client: Rainbird, fake: FakeRainbird, bad: Any
+    ) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="JSON-serialisable"):
+            client.create_tests(KM_ID, [{"name": "x", "steps": [], "extra": bad}])
+        assert fake.requests == []
+
+    @pytest.mark.parametrize("km_id", ["", "  "])
+    def test_empty_km_id_raises(self, client: Rainbird, fake: FakeRainbird, km_id: str) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="km_id"):
+            client.create_tests(km_id, TEST_SUITE)
+        with pytest.raises(RainbirdConfigurationError, match="km_id"):
+            client.get_tests(km_id)
+        assert fake.requests == []
+
+    def test_get_tests(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.test_suites[KM_ID] = TEST_SUITE
+        suite = client.get_tests(KM_ID)
+        assert isinstance(suite, TestSuite)
+        assert (suite.km_id, suite.test_count, suite.tests) == (KM_ID, 1, TEST_SUITE)
+        assert len(suite) == 1
+        assert [t["name"] for t in suite] == ["Fred speaks French"]
+        assert suite.raw == {"kmID": KM_ID, "testCount": 1, "tests": TEST_SUITE}
+        assert fake.last.method == "GET"
+        assert fake.last.path == f"/maps/{KM_ID}/tests"
+        assert fake.last.headers["version"] == "v1"
+
+    def test_get_tests_keeps_studio_fields(self, client: Rainbird, fake: FakeRainbird) -> None:
+        stored = [{**TEST_SUITE[0], "lastRun": {"status": "pass"}}]
+        fake.test_suites[KM_ID] = stored
+        assert client.get_tests(KM_ID).tests == stored
+
+    def test_get_tests_without_tests_is_not_found(self, client: Rainbird) -> None:
+        with pytest.raises(NotFoundError) as info:
+            client.get_tests(KM_ID)
+        assert info.value.message == "no tests found"
+
+    def test_get_tests_unreadable_suite_is_a_conflict(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.test_suites[KM_ID] = {"legacy": True}
+        with pytest.raises(ConflictError, match="format the API can't read"):
+            client.get_tests(KM_ID)
+
+    def test_get_tests_200_without_tests_list_is_unexpected(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.fail_next(200, {"error": "suite store unavailable"})
+        with pytest.raises(UnexpectedResponseError, match="suite store unavailable"):
+            client.get_tests(KM_ID)
+        fake.fail_next(200, {"kmID": KM_ID})
+        with pytest.raises(UnexpectedResponseError, match="'tests'"):
+            client.get_tests(KM_ID)
+
+    def test_get_tests_falls_back_to_the_requested_km_id(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.fail_next(200, {"tests": TEST_SUITE})
+        suite = client.get_tests(f" {KM_ID} ")
+        assert (suite.km_id, suite.test_count) == (KM_ID, 1)
+
+
+class TestTestRuns:
+    def test_start_test_run(self, client: Rainbird, fake: FakeRainbird) -> None:
+        started = client.start_test_run(KM_ID)
+        assert isinstance(started, TestRunStarted)
+        assert started.km_id == KM_ID
+        assert fake.test_runs == {started.run_id: KM_ID}
+        assert started.raw == {"runID": started.run_id}
+        assert fake.last.method == "POST"
+        assert fake.last.path == f"/maps/{KM_ID}/runs"
+        assert fake.last.json is None
+        assert fake.last.headers["version"] == "v1"
+
+    def test_start_test_run_is_retried_on_503_like_every_post(
+        self, client: Rainbird, fake: FakeRainbird, sleeps: list[float]
+    ) -> None:
+        fake.fail_next(503)
+        client.start_test_run(KM_ID)
+        assert len(fake.calls("/runs")) == 2
+        assert len(sleeps) == 1
+
+    def test_start_test_run_without_run_id_is_unexpected(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.fail_next(202, {"error": "run queue is full"})
+        with pytest.raises(UnexpectedResponseError, match="run queue is full") as info:
+            client.start_test_run(KM_ID)
+        assert info.value.status_code == 202
+        fake.fail_next(202, {})
+        with pytest.raises(UnexpectedResponseError, match="'runID'"):
+            client.start_test_run(KM_ID)
+
+    def test_get_test_run(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.test_runs["run-1"] = KM_ID
+        run = client.get_test_run("run-1")
+        assert isinstance(run, rainbird_ai.TestRun)  # the module has its own TestRun class
+        assert run.run_id == "run-1"
+        assert run.status is TestRunStatus.COMPLETE
+        assert (run.is_finished, run.is_complete, run.is_failed, run.all_passed) == (
+            True,
+            True,
+            False,
+            False,
+        )
+        assert (run.summary.total, run.summary.passed, run.summary.failed) == (2, 1, 1)
+        passed, failed = run.results
+        assert passed.passed and passed.status is TestResultStatus.PASS
+        assert failed.status is TestResultStatus.FAIL
+        assert (failed.index, failed.name, failed.failed_step_index) == (
+            1,
+            "Fred lives in France",
+            1,
+        )
+        assert failed.errors == ["expected response did not match actual response"]
+        assert failed.expected == TEST_RUN_COMPLETE["results"][1]["expected"]
+        assert failed.actual == {"result": []}
+        assert passed.actual["result"][0]["object"] == "French"  # sent for passing tests too
+        assert passed.expected == TEST_RUN_COMPLETE["results"][0]["expected"]
+        assert run.failures == [failed]
+        assert run.error is None
+        assert run.raw == {"runID": "run-1", **TEST_RUN_COMPLETE}
+        assert fake.last.method == "GET"
+        assert fake.last.path == "/runs/run-1"
+        assert fake.last.headers["version"] == "v1"
+
+    def test_get_test_run_unknown_is_not_found(self, client: Rainbird) -> None:
+        with pytest.raises(NotFoundError) as info:
+            client.get_test_run("someone-elses-run")
+        assert info.value.message == "run not found"
+
+    def test_get_test_run_without_status_is_unexpected(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.fail_next(200, {"runID": "r"})
+        with pytest.raises(UnexpectedResponseError, match="'status'"):
+            client.get_test_run("r")
+
+    def test_get_test_run_empty_id_raises(self, client: Rainbird, fake: FakeRainbird) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="run_id"):
+            client.get_test_run(" ")
+        assert fake.requests == []
+
+    def test_run_tests_starts_and_polls_until_complete(
+        self, client: Rainbird, fake: FakeRainbird, sleeps: list[float]
+    ) -> None:
+        fake.queue_run({**TEST_RUN_RUNNING, "status": "pending"}, TEST_RUN_RUNNING, TEST_RUN_PASSED)
+        run = client.run_tests(KM_ID, poll_interval=2.5)
+        assert run.all_passed
+        (run_id,) = fake.test_runs
+        assert run.run_id == run_id
+        assert [(c.method, c.path) for c in fake.requests] == [
+            ("POST", f"/maps/{KM_ID}/runs"),
+            *[("GET", f"/runs/{run_id}")] * 3,
+        ]
+        assert sleeps == [2.5, 2.5]
+
+    def test_run_tests_returns_a_complete_run_with_failing_tests(
+        self, client: Rainbird, sleeps: list[float]
+    ) -> None:
+        run = client.run_tests(KM_ID)  # the fake's default body: one pass, one fail
+        assert run.is_complete and not run.all_passed
+        assert [r.name for r in run.failures] == ["Fred lives in France"]
+        assert sleeps == []
+
+    def test_failed_run_raises_test_run_failed_error(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.queue_run(TEST_RUN_FAILED)
+        with pytest.raises(TestRunFailedError) as info:
+            client.run_tests(KM_ID)
+        exc = info.value
+        assert exc.category == "suite_load"
+        assert exc.run is not None and exc.run.is_failed
+        assert exc.run.error is not None
+        assert exc.run.error.message == "the map's tests couldn't be loaded"
+        assert str(exc) == (
+            f"test run {exc.run.run_id} failed: the map's tests couldn't be loaded (suite_load)"
+        )
+        assert not isinstance(exc, RainbirdAPIError)
+
+    def test_run_tests_times_out_with_the_last_run(
+        self, client: Rainbird, fake: FakeRainbird, sleeps: list[float]
+    ) -> None:
+        fake.queue_run(TEST_RUN_RUNNING)
+        with pytest.raises(TestRunTimeoutError) as info:
+            client.run_tests(KM_ID, timeout=0)
+        exc = info.value
+        (run_id,) = fake.test_runs
+        assert isinstance(exc, RainbirdTimeoutError)
+        assert exc.run_id == run_id
+        assert exc.run is not None and exc.run.status is TestRunStatus.RUNNING
+        assert str(exc) == f"test run {run_id} did not finish within 0 seconds (status: running)"
+        assert sleeps == []
+        assert len(fake.calls("/runs/")) == 1
+
+    def test_wait_never_sleeps_past_the_timeout(
+        self, client: Rainbird, fake: FakeRainbird, sleeps: list[float]
+    ) -> None:
+        fake.queue_run(TEST_RUN_RUNNING, TEST_RUN_PASSED)
+        client.run_tests(KM_ID, poll_interval=60, timeout=5)
+        assert len(sleeps) == 1
+        assert 0 < sleeps[0] <= 5
+
+    def test_timeout_none_waits_as_long_as_it_takes(
+        self, client: Rainbird, fake: FakeRainbird, sleeps: list[float]
+    ) -> None:
+        fake.queue_run(*[TEST_RUN_RUNNING] * 5, TEST_RUN_PASSED)
+        assert client.run_tests(KM_ID, poll_interval=0.5, timeout=None).all_passed
+        assert sleeps == [0.5] * 5
+
+    def test_wait_for_test_run_resumes_after_a_timeout(
+        self, client: Rainbird, fake: FakeRainbird, sleeps: list[float]
+    ) -> None:
+        fake.queue_run(TEST_RUN_RUNNING, TEST_RUN_PASSED)
+        with pytest.raises(TestRunTimeoutError) as info:
+            client.run_tests(KM_ID, timeout=0)
+        assert info.value.run_id is not None
+        assert client.wait_for_test_run(info.value.run_id).all_passed
+
+    def test_an_unknown_status_is_not_final(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.test_runs["r"] = KM_ID
+        fake.queue_run({"status": "cancelled"})
+        with pytest.raises(TestRunTimeoutError, match="status: cancelled"):
+            client.wait_for_test_run("r", timeout=0)
+
+    def test_unknown_run_is_not_waited_for(self, client: Rainbird, sleeps: list[float]) -> None:
+        with pytest.raises(NotFoundError):
+            client.wait_for_test_run("missing")
+        assert sleeps == []
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"poll_interval": 0}, "poll_interval"),
+            ({"poll_interval": -1}, "poll_interval"),
+            ({"poll_interval": float("nan")}, "poll_interval"),
+            ({"poll_interval": True}, "poll_interval"),
+            ({"timeout": -1}, "timeout"),
+            ({"timeout": float("inf")}, "timeout"),
+            ({"timeout": "60"}, "timeout"),
+        ],
+    )
+    def test_bad_polling_arguments_raise_before_starting_a_run(
+        self, client: Rainbird, fake: FakeRainbird, kwargs: dict[str, Any], match: str
+    ) -> None:
+        with pytest.raises(RainbirdConfigurationError, match=match):
+            client.run_tests(KM_ID, **kwargs)
+        with pytest.raises(RainbirdConfigurationError, match=match):
+            client.wait_for_test_run("r", **kwargs)
+        assert fake.requests == []
+
+
+class TestReadme:
+    def test_add_readme(self, client: Rainbird, fake: FakeRainbird) -> None:
+        added = client.add_readme(KM_ID, "# Languages\n\nWho speaks what.")
+        assert isinstance(added, ReadmeAdded)
+        assert added.km_id == KM_ID
+        assert added.raw == {"kmID": KM_ID}
+        assert fake.last.method == "POST"
+        assert fake.last.path == f"/maps/{KM_ID}/readme"
+        assert fake.last.json == {"readme": "# Languages\n\nWho speaks what."}
+        assert fake.last.headers["version"] == "v1"
+        assert fake.readmes[KM_ID] == "# Languages\n\nWho speaks what."
+
+    def test_existing_readme_is_a_conflict(self, client: Rainbird, fake: FakeRainbird) -> None:
+        client.add_readme(KM_ID, "# First")
+        with pytest.raises(ConflictError) as info:
+            client.add_readme(KM_ID, "# Second")
+        assert info.value.message == "this map already has a readme; nothing was changed"
+        assert fake.readmes[KM_ID] == "# First"
+
+    def test_cleared_studio_readme_counts_as_none(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.readmes[KM_ID] = "<p><br></p>"
+        client.add_readme(KM_ID, "# Fresh")
+        assert fake.readmes[KM_ID] == "# Fresh"
+
+    def test_html_is_rejected_by_the_server(self, client: Rainbird) -> None:
+        with pytest.raises(BadRequestError, match="can't start with <"):
+            client.add_readme(KM_ID, "  <h1>Languages</h1>")
+
+    @pytest.mark.parametrize("readme", ["", "  \n\t"])
+    def test_blank_readme_raises_before_any_request(
+        self, client: Rainbird, fake: FakeRainbird, readme: str
+    ) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="readme"):
+            client.add_readme(KM_ID, readme)
+        assert fake.requests == []
+
+    def test_readme_text_is_sent_as_given(self, client: Rainbird, fake: FakeRainbird) -> None:
+        client.add_readme(KM_ID, "\n# Padded\n\n")
+        assert fake.last.json == {"readme": "\n# Padded\n\n"}
+
+    def test_unknown_map_is_not_found(self, client: Rainbird) -> None:
+        with pytest.raises(NotFoundError, match="map not found"):
+            client.add_readme("00000000-0000-0000-0000-000000000000", "# x")
+
+
+class TestValidateRBLang:
+    def test_valid_rblang(self, client: Rainbird, fake: FakeRainbird) -> None:
+        result = client.validate_rblang(RBLANG)
+        assert isinstance(result, ValidationResult)
+        assert result.valid is True
+        assert result.errors == []
+        assert [(w.message, w.line) for w in result.warnings] == [
+            ("concept 'Language' has no instances", 4),
+            ("map has no rules", None),
+        ]
+        assert [str(w) for w in result.warnings] == [
+            "line 4: concept 'Language' has no instances",
+            "map has no rules",
+        ]
+        assert result.raw == VALIDATE_OK
+        assert fake.last.method == "POST"
+        assert fake.last.path == "/validate"
+        assert fake.last.json == {"rblang": RBLANG}
+        assert fake.last.headers["version"] == "v1"
+
+    def test_invalid_rblang_is_returned_not_raised(self, client: Rainbird) -> None:
+        result = client.validate_rblang("<kb/>")
+        assert result.valid is False
+        assert [(e.message, e.line) for e in result.errors] == [("root element must be rbl:kb", 1)]
+        assert result.warnings == []
+        assert result.raw == VALIDATE_ERROR
+
+    def test_body_without_valid_is_unexpected(self, client: Rainbird, fake: FakeRainbird) -> None:
+        fake.fail_next(200, {"errors": []})
+        with pytest.raises(UnexpectedResponseError, match="'valid'"):
+            client.validate_rblang(RBLANG)
+
+    def test_empty_rblang_raises_before_any_request(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        with pytest.raises(RainbirdConfigurationError, match="rblang"):
+            client.validate_rblang("  ")
+        assert fake.requests == []
+
+    def test_host_without_the_endpoint_is_not_found(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.fail_next(404, "404 page not found")
+        with pytest.raises(NotFoundError, match="404 page not found"):
+            client.validate_rblang(RBLANG)
+
+    def test_oversized_body_is_request_too_large_and_not_retried(
+        self, client: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.fail_next(413, {"error": "request body is larger than 10 MB"})
+        with pytest.raises(RequestTooLargeError) as info:
+            client.validate_rblang(RBLANG)
+        assert info.value.status_code == 413
+        assert info.value.message == "request body is larger than 10 MB"
+        assert len(fake.calls("/validate")) == 1
+
+
+class TestMapManagementAuth:
+    def test_no_key_gives_the_nested_no_permission_body(
+        self, make_client, fake: FakeRainbird
+    ) -> None:
+        rb = make_client(default_headers={"x-api-key": ""})
+        with pytest.raises(PermissionDeniedError) as info:
+            rb.get_tests(KM_ID)
+        assert info.value.message == "NO_PERMISSION"
+        assert info.value.body == {"error": {"type": "NO_PERMISSION"}}
+
+    def test_wrong_key_is_an_authentication_error(self, make_client) -> None:
+        with pytest.raises(AuthenticationError, match="invalid API key"):
+            make_client(api_key="wrong").start_test_run(KM_ID)
+
+    def test_unhandled_500_message_carries_the_trace_id(
+        self, noretry: Rainbird, fake: FakeRainbird
+    ) -> None:
+        fake.fail_next(500, {"error": {"type": "UNHANDLED", "trace": "abc-123"}})
+        with pytest.raises(ServerError) as info:
+            noretry.get_test_run("r")
+        assert info.value.message == "UNHANDLED (trace abc-123)"
 
 
 # =========================================================================== error mapping

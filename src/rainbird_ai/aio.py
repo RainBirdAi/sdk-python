@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import inspect
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
 from typing import Any, Literal, overload
 
 import httpx
@@ -30,8 +31,15 @@ from ._http import (
     Request,
     RetryPolicy,
     Unset,
+    async_sleep,
 )
-from .client import MAX_INJECT_BATCH, _check_evidence_mode
+from .client import (
+    MAX_INJECT_BATCH,
+    _check_evidence_mode,
+    _check_polling,
+    _final_run,
+    _poll_delay,
+)
 from .errors import NoPendingQuestionError, RainbirdConfigurationError, RainbirdError
 from .models import (
     Answer,
@@ -47,9 +55,15 @@ from .models import (
     QueryResponse,
     Question,
     QuestionResponse,
+    ReadmeAdded,
     ResultResponse,
     SessionFacts,
     StartResponse,
+    TestRun,
+    TestRunStarted,
+    TestSuite,
+    TestSuiteCreated,
+    ValidationResult,
     studio_url_for,
 )
 
@@ -247,6 +261,60 @@ class AsyncRainbird:
     ) -> CreateMapResult:
         """Async version of :meth:`rainbird_ai.Rainbird.create_map` (undocumented endpoint)."""
         result: CreateMapResult = await self._send(_ops.create_map(name, rblang, description))
+        return result
+
+    # -- knowledge map tests, readme and validation (undocumented endpoints) -----------
+
+    async def create_tests(
+        self, km_id: str, tests: Sequence[Mapping[str, Any]] | Mapping[str, Any] | TestSuite
+    ) -> TestSuiteCreated:
+        """Async version of :meth:`rainbird_ai.Rainbird.create_tests` (undocumented endpoint)."""
+        result: TestSuiteCreated = await self._send(_ops.create_tests(km_id, tests))
+        return result
+
+    async def get_tests(self, km_id: str) -> TestSuite:
+        """Async version of :meth:`rainbird_ai.Rainbird.get_tests` (undocumented endpoint)."""
+        result: TestSuite = await self._send(_ops.get_tests(km_id))
+        return result
+
+    async def start_test_run(self, km_id: str) -> TestRunStarted:
+        """Async version of :meth:`rainbird_ai.Rainbird.start_test_run` (undocumented endpoint)."""
+        result: TestRunStarted = await self._send(_ops.start_test_run(km_id))
+        return result
+
+    async def get_test_run(self, run_id: str) -> TestRun:
+        """Async version of :meth:`rainbird_ai.Rainbird.get_test_run` (undocumented endpoint)."""
+        result: TestRun = await self._send(_ops.get_test_run(run_id))
+        return result
+
+    async def wait_for_test_run(
+        self, run_id: str, *, poll_interval: float = 1.0, timeout: float | None = 300.0
+    ) -> TestRun:
+        """Async version of :meth:`rainbird_ai.Rainbird.wait_for_test_run` (``anyio.sleep``)."""
+        _check_polling(poll_interval, timeout)
+        started = time.monotonic()
+        while True:
+            run = await self.get_test_run(run_id)
+            if run.is_finished:
+                return _final_run(run)
+            await async_sleep(_poll_delay(run, started, poll_interval, timeout))
+
+    async def run_tests(
+        self, km_id: str, *, poll_interval: float = 1.0, timeout: float | None = 300.0
+    ) -> TestRun:
+        """Async version of :meth:`rainbird_ai.Rainbird.run_tests`."""
+        _check_polling(poll_interval, timeout)  # before starting a run that nobody waits for
+        run_id = (await self.start_test_run(km_id)).run_id
+        return await self.wait_for_test_run(run_id, poll_interval=poll_interval, timeout=timeout)
+
+    async def add_readme(self, km_id: str, readme: str) -> ReadmeAdded:
+        """Async version of :meth:`rainbird_ai.Rainbird.add_readme` (undocumented endpoint)."""
+        result: ReadmeAdded = await self._send(_ops.add_readme(km_id, readme))
+        return result
+
+    async def validate_rblang(self, rblang: str) -> ValidationResult:
+        """Async version of :meth:`rainbird_ai.Rainbird.validate_rblang` (undocumented endpoint)."""
+        result: ValidationResult = await self._send(_ops.validate_rblang(rblang))
         return result
 
 

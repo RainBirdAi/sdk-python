@@ -32,6 +32,7 @@ from rainbird_ai import (
     AsyncSession,
     AuthenticationError,
     BadRequestError,
+    ConflictError,
     Environment,
     InvalidAnswerError,
     InvalidFactError,
@@ -50,11 +51,14 @@ from rainbird_ai import (
     RainbirdTimeoutError,
     RainbirdTransportError,
     RateLimitError,
+    RequestTooLargeError,
     ResultItem,
     ResultResponse,
     RetryPolicy,
     ServerError,
     Session,
+    TestRunFailedError,
+    TestRunTimeoutError,
     UnexpectedResponseError,
     __version__,
     _answers,
@@ -91,6 +95,8 @@ API_ERRORS: dict[int, type[RainbirdAPIError]] = {
     401: AuthenticationError,
     403: PermissionDeniedError,
     404: NotFoundError,
+    409: ConflictError,
+    413: RequestTooLargeError,
     429: RateLimitError,
     500: ServerError,
 }
@@ -100,6 +106,7 @@ OTHER_ERRORS = (
     NoPendingQuestionError,
     KnowledgeMapError,
     NaturalLanguageError,
+    TestRunFailedError,
     UnexpectedResponseError,
 )
 
@@ -505,6 +512,29 @@ class TestErrorHierarchy:
 
     def test_transport_error_subclasses_rainbird_error_directly(self) -> None:
         assert RainbirdTransportError.__bases__ == (RainbirdError,)
+
+    def test_test_run_timeout_is_a_timeout_error(self) -> None:
+        # ``except RainbirdTimeoutError`` also catches giving up on a test run.
+        assert TestRunTimeoutError.__bases__ == (RainbirdTimeoutError,)
+        exc = TestRunTimeoutError("slow")
+        assert (str(exc), exc.args, exc.run, exc.run_id) == ("slow", ("slow",), None, None)
+        assert (exc.method, exc.url) == (None, None)
+
+    def test_test_run_failed_error_without_a_run(self) -> None:
+        exc = TestRunFailedError("boom")
+        assert (exc.message, exc.run, exc.category) == ("boom", None, None)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            n
+            for n in rainbird_ai.__all__
+            if n.startswith("Test") and inspect.isclass(getattr(rainbird_ai, n))
+        ],
+    )
+    def test_test_named_classes_are_not_collected_by_pytest(self, name: str) -> None:
+        # Users import these into their own test modules; pytest must not try to collect them.
+        assert getattr(rainbird_ai, name).__test__ is False
 
     @pytest.mark.parametrize("exc_type", OTHER_ERRORS)
     def test_non_http_errors_are_not_api_errors(self, exc_type: type[RainbirdError]) -> None:
@@ -954,6 +984,14 @@ class TestSyncAsyncParity:
             ("AsyncRainbird.evidence", "coroutine"),
             ("AsyncRainbird.get_map_source", "coroutine"),
             ("AsyncRainbird.create_map", "coroutine"),
+            ("AsyncRainbird.create_tests", "coroutine"),
+            ("AsyncRainbird.get_tests", "coroutine"),
+            ("AsyncRainbird.start_test_run", "coroutine"),
+            ("AsyncRainbird.get_test_run", "coroutine"),
+            ("AsyncRainbird.wait_for_test_run", "coroutine"),
+            ("AsyncRainbird.run_tests", "coroutine"),
+            ("AsyncRainbird.add_readme", "coroutine"),
+            ("AsyncRainbird.validate_rblang", "coroutine"),
             ("AsyncRainbird.aclose", "coroutine"),
             ("AsyncRainbird.resume", "plain"),
             ("AsyncRainbird.evidence_url", "plain"),
